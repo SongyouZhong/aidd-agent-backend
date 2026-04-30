@@ -134,11 +134,11 @@ graph TB
     Frontend --> APIGateway
     APIGateway --> AgentCore
     AgentCore --> Tools & LLM
-    Tracer --> MinIO
+    Tracer --> SeaweedFS
     SessionAPI --> PG
     AgentCore --> Redis
-    AgentCore --> MinIO
-    Frontend & APIGateway & Storage & MinIO --> K3S
+    AgentCore --> SeaweedFS
+    Frontend & APIGateway & Storage & SeaweedFS --> K3S
 ```
 
 ---
@@ -162,7 +162,7 @@ graph TB
 | 框架 | FastAPI |
 | ORM | SQLAlchemy 2.0 + Alembic |
 | 关系型数据库 | PostgreSQL (用户、会话元数据) |
-| 对象存储 | **MinIO / S3** (对话历史、Agent Trace 审计日志、大文件归档) |
+| 对象存储 | **SeaweedFS / S3** (对话历史、Agent Trace 审计日志、大文件归档) |
 | 缓存 | Redis (热点上下文) |
 | 认证 | JWT（用户名+密码，简单验证） |
 
@@ -201,8 +201,8 @@ erDiagram
         uuid user_id FK
         string title
         json metadata
-        string s3_messages_path "指向 MinIO 中的 JSONL 路径"
-        string s3_traces_prefix "指向 MinIO 中的 AgentTrace 目录"
+        string s3_messages_path "指向 SeaweedFS 中的 JSONL 路径"
+        string s3_traces_prefix "指向 SeaweedFS 中的 AgentTrace 目录"
         datetime created_at
         datetime updated_at
     }
@@ -210,7 +210,7 @@ erDiagram
     User ||--o{ Session : "owns"
 ```
 
-> **注意**：为了应对极高的 token 占用和追踪日志，仅在 PostgreSQL 存储轻量的元数据。庞大的对话记录 (Messages) 和子代理的运行审计日志 (AgentTrace) 直接以 JSON/JSONL 格式存储在 **MinIO (S3)** 中。
+> **注意**：为了应对极高的 token 占用和追踪日志，仅在 PostgreSQL 存储轻量的元数据。庞大的对话记录 (Messages) 和子代理的运行审计日志 (AgentTrace) 直接以 JSON/JSONL 格式存储在 **SeaweedFS (S3)** 中。
 
 > User 模型简化：仅 username + password_hash，无邮箱。Session 通过 user_id 外键实现对话隔离。
 
@@ -269,7 +269,7 @@ graph LR
             BE["Pod: backend<br/>FastAPI"]
             PG["Pod: postgresql"]
             RD["Pod: redis"]
-            MO["Pod: minio<br/>S3 对象存储"]
+            MO["Pod: seaweedfs<br/>S3 对象存储"]
         end
         Ingress["Ingress Controller"]
     end
@@ -283,10 +283,10 @@ graph LR
 
 需要的 k3s 资源：
 - **Deployment**: frontend, backend (各 1-2 replicas)
-- **StatefulSet**: postgresql, redis, minio
+- **StatefulSet**: postgresql, redis, seaweedfs
 - **Ingress**: Nginx/Traefik 反向代理
 - **ConfigMap/Secret**: API keys, 数据库/S3 连接配置
-- **PVC**: PostgreSQL 与 MinIO 数据持久化
+- **PVC**: PostgreSQL 与 SeaweedFS 数据持久化
 
 ---
 
@@ -312,7 +312,7 @@ aidd-platform/
 │   │   ├── agent/              # LangGraph 核心, Prompts, Context 管理
 │   │   ├── tools/              # 领域工具层 (精简自 Biomni)
 │   │   ├── core/               # k3s 配置映射 (pydantic-settings)
-│   │   └── db/                 # PG/Redis/MinIO 连接
+│   │   └── db/                 # PG/Redis/SeaweedFS 连接
 │   ├── alembic/                # DB 迁移
 │   └── environment.yml         # Mamba 统一环境依赖
 │
