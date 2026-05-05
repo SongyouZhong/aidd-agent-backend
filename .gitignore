@@ -16,3 +16,4 @@ __pycache__/
 # Runtime generated data
 .langgraph_api/
 scripts/results/
+logs/

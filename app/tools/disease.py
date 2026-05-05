@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 
+import httpx
+
 from langchain_core.tools import tool
 
 from app.tools.base import query_rest_api
@@ -208,7 +210,15 @@ async def query_quickgo(uniprot_id: str, aspect: str = "F", max_results: int = 3
         data = await query_rest_api(
             f"{QUICKGO_BASE}/annotation/search",
             params=params,
+            max_retries=1,
         )
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code if exc.response is not None else 0
+        if code >= 500:
+            logger.warning("QuickGO service error for %s: HTTP %d", uid, code)
+            return f"QuickGO service temporarily unavailable (HTTP {code}) for {uid}."
+        logger.exception("QuickGO query failed")
+        return f"QuickGO query failed for {uid}: {exc}"
     except Exception as exc:
         logger.exception("QuickGO query failed")
         return f"QuickGO query failed for {uid}: {exc}"

@@ -20,8 +20,11 @@ goal is "always produce a partial report" (plan §Further Considerations).
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
+import pathlib
+import re
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import (
@@ -48,8 +51,10 @@ from app.tools import default_registry
 logger = logging.getLogger(__name__)
 
 
-MAX_NODE_STEPS = 5
-NODE_TIMEOUT_SECONDS = 60.0
+MAX_NODE_STEPS = 10
+NODE_TIMEOUT_SECONDS = 120.0
+
+LOGS_DIR = pathlib.Path("logs/target_discovery")
 
 
 # Tool subsets per node — names must match registered tool names.
@@ -110,7 +115,13 @@ async def _invoke_tool(name: str, args: dict[str, Any]) -> str:
 
 
 def _extract_answer_json(text: str) -> dict[str, Any] | None:
-    """Pull the first ``{...}`` JSON object out of an <answer> block."""
+    """Pull the first ``{...}`` JSON object out of an <answer> block or raw text.
+
+    Handles:
+    - ``<answer>...</answer>`` tags
+    - Markdown ````json ... ``` `` code fences
+    - Bare ``{...}`` in the text
+    """
     if not text:
         return None
     blob = text
@@ -118,6 +129,13 @@ def _extract_answer_json(text: str) -> dict[str, Any] | None:
         start = text.find("<answer>") + len("<answer>")
         end = text.find("</answer>", start)
         blob = text[start:end] if end > start else text[start:]
+    # Try markdown code fence first (```json ... ``` or ``` ... ```)
+    code_fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", blob, re.DOTALL)
+    if code_fence:
+        try:
+            return json.loads(code_fence.group(1))
+        except Exception:
+            pass
     # Greedy match the outermost {...}
     first = blob.find("{")
     last = blob.rfind("}")
@@ -165,6 +183,23 @@ async def _run_node_loop(
             messages.append(
                 ToolMessage(content=tool_out, name=tc.name, tool_call_id=tc.id)
             )
+    # Safety net: if loop exhausted or last text has no parseable JSON,
+    # make one final call without tools to force structured output.
+    if _extract_answer_json(last_text) is None:
+        messages.append(
+            HumanMessage(
+                content=(
+                    "请根据以上所有工具查询结果，直接输出 <answer>...</answer> "
+                    "格式的最终 JSON 总结，不要再调用任何工具。"
+                )
+            )
+        )
+        try:
+            final_resp: AIResponse = await provider.generate(messages=messages, tools=None)
+            if final_resp.text:
+                last_text = final_resp.text
+        except Exception as exc:
+            logger.warning("Forced final summary call failed: %s", exc)
     return last_text, messages
 
 
@@ -176,14 +211,20 @@ async def _safe_node(
     template: str,
     tool_names: list[str],
     prior_context: str | None = None,
+    log_dir: pathlib.Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Run one node, catch exceptions and timeouts, return (result, notes)."""
     sys_prompt = _render(template, target_query=target_query)
     user_prompt = f"开始执行节点 [{name}]，目标靶点：{target_query}。"
     if prior_context:
-        user_prompt += f"\n\n先前节点已确认的信息（请直接使用这些 ID，不要自行推测）：\n{prior_context}"
+        user_prompt += (
+            f"\n\n❗ 强制约束：以下是已验证的 UniProt accession，"
+            f"调用任何工具的 uniprot_id 参数时必须严格使用这些值，"
+            f"禁止使用任何其他 accession（如 Q13168 等都是错误的）：\n{prior_context}"
+        )
+    messages: list[BaseMessage] = []
     try:
-        last_text, _ = await asyncio.wait_for(
+        last_text, messages = await asyncio.wait_for(
             _run_node_loop(
                 provider=provider,
                 system_prompt=sys_prompt,
@@ -193,14 +234,81 @@ async def _safe_node(
             timeout=NODE_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
-        return {}, [f"节点 [{name}] 超时（>{NODE_TIMEOUT_SECONDS:.0f}s），跳过。"]
+        notes_out = [f"节点 [{name}] 超时（>{NODE_TIMEOUT_SECONDS:.0f}s），跳过。"]
+        await _write_node_log(log_dir, name, target_query, messages, "", {}, notes_out)
+        return {}, notes_out
     except Exception as exc:
         logger.exception("Node %s failed", name)
-        return {}, [f"节点 [{name}] 异常：{exc!r}"]
+        notes_out = [f"节点 [{name}] 异常：{exc!r}"]
+        await _write_node_log(log_dir, name, target_query, messages, "", {}, notes_out)
+        return {}, notes_out
     parsed = _extract_answer_json(last_text)
     if parsed is None:
-        return {}, [f"节点 [{name}] 未输出可解析的 JSON。"]
+        notes_out = [f"节点 [{name}] 未输出可解析的 JSON。"]
+        await _write_node_log(log_dir, name, target_query, messages, last_text, {}, notes_out)
+        return {}, notes_out
+    await _write_node_log(log_dir, name, target_query, messages, last_text, parsed, [])
     return parsed, []
+
+
+async def _write_node_log(
+    log_dir: pathlib.Path | None,
+    name: str,
+    target_query: str,
+    messages: list[BaseMessage],
+    raw_output: str,
+    parsed: dict[str, Any],
+    notes: list[str],
+) -> None:
+    """Serialize a node's full conversation + result to a JSON file."""
+    if log_dir is None:
+        return
+    try:
+        await asyncio.to_thread(log_dir.mkdir, parents=True, exist_ok=True)
+        payload = {
+            "node": name,
+            "target": target_query,
+            "messages": _serialize_messages(messages),
+            "raw_output": raw_output,
+            "parsed": parsed,
+            "notes": notes,
+        }
+        text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        await asyncio.to_thread((log_dir / f"{name}.json").write_text, text)
+    except Exception as exc:
+        logger.warning("Failed to write node log for %s: %s", name, exc)
+
+
+# --- logging helpers --------------------------------------------------
+
+
+def _serialize_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
+    """Convert LangChain messages to plain dicts for JSON serialization."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if isinstance(m, SystemMessage):
+            out.append({"role": "system", "content": m.content})
+        elif isinstance(m, HumanMessage):
+            out.append({"role": "user", "content": m.content})
+        elif isinstance(m, AIMessage):
+            d: dict[str, Any] = {"role": "assistant", "content": m.content}
+            tcs = getattr(m, "tool_calls", None)
+            if tcs:
+                d["tool_calls"] = [
+                    {"id": tc["id"], "name": tc["name"], "args": tc["args"]}
+                    for tc in tcs
+                ]
+            out.append(d)
+        elif isinstance(m, ToolMessage):
+            out.append({
+                "role": "tool",
+                "name": m.name,
+                "tool_call_id": m.tool_call_id,
+                "content": m.content,
+            })
+        else:
+            out.append({"role": type(m).__name__, "content": str(m.content)})
+    return out
 
 
 # --- node definitions -------------------------------------------------
@@ -217,11 +325,13 @@ def _resolved_accession_context(sub_results: dict[str, Any]) -> str | None:
     proteins = comp.get("proteins") or []
     if not proteins:
         return None
+    seen: set[str] = set()
     parts = []
-    for p in proteins[:3]:  # at most 3 chains
+    for p in proteins:
         acc = p.get("accession")
         gene = p.get("gene")
-        if acc:
+        if acc and acc not in seen:
+            seen.add(acc)
             parts.append(f"UniProt accession: {acc}" + (f" (gene: {gene})" if gene else ""))
     return "\n".join(parts) if parts else None
 
@@ -230,30 +340,40 @@ def build_target_discovery_graph(provider: Any):
     """Compile the target-discovery sub-graph bound to ``provider``."""
 
     async def literature_node(state: TargetDiscoveryState) -> dict[str, Any]:
+        # Create a per-run log directory shared by all nodes in this run.
+        ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        slug = re.sub(r"[^\w\-]", "_", state["target_query"])[:40].strip("_")
+        run_log_dir = LOGS_DIR / f"{ts}_{slug}"
+        await asyncio.to_thread(run_log_dir.mkdir, parents=True, exist_ok=True)
         result, notes = await _safe_node(
             name="literature",
             provider=provider,
             target_query=state["target_query"],
             template=LITERATURE_NODE_PROMPT,
             tool_names=LITERATURE_TOOLS,
+            log_dir=run_log_dir,
         )
         sub = dict(state.get("sub_results") or {})
         sub["literature"] = result
+        sub["_run_log_dir"] = str(run_log_dir)
         return {"sub_results": sub, "notes": (state.get("notes") or []) + notes}
 
     async def composition_node(state: TargetDiscoveryState) -> dict[str, Any]:
+        run_log_dir = pathlib.Path(state.get("sub_results", {}).get("_run_log_dir") or str(LOGS_DIR / "unknown"))
         result, notes = await _safe_node(
             name="composition",
             provider=provider,
             target_query=state["target_query"],
             template=COMPOSITION_NODE_PROMPT,
             tool_names=COMPOSITION_TOOLS,
+            log_dir=run_log_dir,
         )
         sub = dict(state.get("sub_results") or {})
         sub["composition"] = result
         return {"sub_results": sub, "notes": (state.get("notes") or []) + notes}
 
     async def function_node(state: TargetDiscoveryState) -> dict[str, Any]:
+        run_log_dir = pathlib.Path(state.get("sub_results", {}).get("_run_log_dir") or str(LOGS_DIR / "unknown"))
         result, notes = await _safe_node(
             name="function",
             provider=provider,
@@ -261,12 +381,14 @@ def build_target_discovery_graph(provider: Any):
             template=FUNCTION_NODE_PROMPT,
             tool_names=FUNCTION_TOOLS,
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
+            log_dir=run_log_dir,
         )
         sub = dict(state.get("sub_results") or {})
         sub["function"] = result
         return {"sub_results": sub, "notes": (state.get("notes") or []) + notes}
 
     async def pathway_node(state: TargetDiscoveryState) -> dict[str, Any]:
+        run_log_dir = pathlib.Path(state.get("sub_results", {}).get("_run_log_dir") or str(LOGS_DIR / "unknown"))
         result, notes = await _safe_node(
             name="pathway",
             provider=provider,
@@ -274,12 +396,14 @@ def build_target_discovery_graph(provider: Any):
             template=PATHWAY_NODE_PROMPT,
             tool_names=PATHWAY_TOOLS,
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
+            log_dir=run_log_dir,
         )
         sub = dict(state.get("sub_results") or {})
         sub["pathway"] = result
         return {"sub_results": sub, "notes": (state.get("notes") or []) + notes}
 
     async def drugs_node(state: TargetDiscoveryState) -> dict[str, Any]:
+        run_log_dir = pathlib.Path(state.get("sub_results", {}).get("_run_log_dir") or str(LOGS_DIR / "unknown"))
         result, notes = await _safe_node(
             name="drugs",
             provider=provider,
@@ -287,6 +411,7 @@ def build_target_discovery_graph(provider: Any):
             template=DRUGS_NODE_PROMPT,
             tool_names=DRUGS_TOOLS,
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
+            log_dir=run_log_dir,
         )
         sub = dict(state.get("sub_results") or {})
         sub["drugs"] = result
@@ -329,6 +454,19 @@ def build_target_discovery_graph(provider: Any):
                 "organism": "Homo sapiens",
             },
         )
+        # Write final consolidated report to the run log directory.
+        run_log_dir_str = (state.get("sub_results") or {}).get("_run_log_dir")
+        if run_log_dir_str:
+            try:
+                run_log_dir = pathlib.Path(run_log_dir_str)
+                await asyncio.to_thread(run_log_dir.mkdir, parents=True, exist_ok=True)
+                text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
+                await asyncio.to_thread(
+                    (run_log_dir / "final_report.json").write_text, text
+                )
+                logger.info("Run log saved to %s", run_log_dir)
+            except Exception as exc:
+                logger.warning("Failed to write final report log: %s", exc)
         return {"final_report": report}
 
     graph = StateGraph(TargetDiscoveryState)

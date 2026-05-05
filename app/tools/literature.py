@@ -15,6 +15,7 @@ from typing import Any
 
 from langchain_core.tools import tool
 
+from app.tools.base import query_rest_api
 from app.tools.preprocess import MAX_TOOL_TOKENS, guarded_tool
 from app.tools.schemas import Paper
 
@@ -29,20 +30,60 @@ def _format_papers(papers: list[Paper]) -> str:
     return "\n\n".join(p.to_markdown() for p in papers)
 
 
-def _pubmed_to_paper(item: Any) -> Paper:
-    """Coerce a ``pymed`` PubMedArticle into our Paper schema (defensive)."""
-    pmid = getattr(item, "pubmed_id", None) or ""
-    pmid = pmid.split("\n")[0].strip() if isinstance(pmid, str) else str(pmid)
-    return Paper(
-        title=(getattr(item, "title", None) or "").strip(),
-        abstract=(getattr(item, "abstract", None) or "").strip() or None,
-        journal=getattr(item, "journal", None) or None,
-        year=(getattr(item, "publication_date", None).year
-              if getattr(item, "publication_date", None) else None),
-        doi=getattr(item, "doi", None),
-        pmid=pmid or None,
-        url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else None,
+async def _pubmed_query_async(query: str, max_papers: int) -> list[Paper]:
+    """Fetch PubMed papers via NCBI E-utilities (no pymed dependency)."""
+    EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    search_data = await query_rest_api(
+        f"{EUTILS}/esearch.fcgi",
+        params={
+            "db": "pubmed",
+            "term": query,
+            "retmode": "json",
+            "retmax": max_papers,
+        },
     )
+    id_list: list[str] = (search_data.get("esearchresult") or {}).get("idlist") or []
+    if not id_list:
+        return []
+    summary_data = await query_rest_api(
+        f"{EUTILS}/esummary.fcgi",
+        params={
+            "db": "pubmed",
+            "id": ",".join(id_list),
+            "retmode": "json",
+        },
+    )
+    result_map: dict = summary_data.get("result") or {}
+    papers: list[Paper] = []
+    for pmid in id_list:
+        item = result_map.get(pmid)
+        if not item or not isinstance(item, dict):
+            continue
+        doi: str | None = None
+        for aid in item.get("articleids") or []:
+            if aid.get("idtype") == "doi":
+                doi = aid.get("value") or None
+                break
+        year: int | None = None
+        for date_field in ("pubdate", "epubdate", "sortpubdate"):
+            date_str = item.get(date_field) or ""
+            if date_str:
+                try:
+                    year = int(date_str[:4])
+                    break
+                except (ValueError, TypeError):
+                    pass
+        papers.append(
+            Paper(
+                title=(item.get("title") or "").strip(),
+                journal=item.get("fulljournalname") or item.get("source") or None,
+                year=year,
+                doi=doi,
+                pmid=pmid,
+                url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+            )
+        )
+    return papers
 
 
 def _arxiv_to_paper(item: Any) -> Paper:
@@ -56,14 +97,6 @@ def _arxiv_to_paper(item: Any) -> Paper:
 
 
 # --- sync workhorses (run in a worker thread) -------------------------
-
-def _pubmed_query_sync(query: str, max_papers: int) -> list[Paper]:
-    from pymed import PubMed  # imported lazily — slow
-
-    pubmed = PubMed(tool="aidd-agent", email="contact@example.com")
-    papers = list(pubmed.query(query, max_results=max_papers))
-    return [_pubmed_to_paper(p) for p in papers]
-
 
 def _arxiv_query_sync(query: str, max_papers: int) -> list[Paper]:
     import arxiv  # type: ignore
@@ -92,8 +125,8 @@ async def query_pubmed(query: str, max_papers: int = 5) -> str:
     """
     max_papers = max(1, min(int(max_papers), 20))
     try:
-        papers = await asyncio.to_thread(_pubmed_query_sync, query, max_papers)
-    except Exception as exc:  # network/parse errors — return graceful msg
+        papers = await _pubmed_query_async(query, max_papers)
+    except Exception as exc:
         logger.exception("PubMed query failed")
         return f"PubMed query failed: {exc}"
     return _format_papers(papers)

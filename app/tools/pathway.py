@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 
+import httpx
+
 from langchain_core.tools import tool
 
 from app.tools.base import query_rest_api
@@ -111,7 +113,13 @@ async def query_reactome(uniprot_id: str, species: str = "Homo sapiens") -> str:
     url = f"{REACTOME_CONTENT}/data/mapping/UniProt/{uid}/pathways"
     params = {"species": species}
     try:
-        data = await query_rest_api(url, params=params)
+        data = await query_rest_api(url, params=params, max_retries=1)
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code if exc.response is not None else 0
+        if code < 500:
+            return f"Reactome: no pathways mapped to {uid} (HTTP {code}, accession may be invalid or unmapped)."
+        logger.warning("Reactome server error for %s: HTTP %d", uid, code)
+        return f"Reactome query failed for {uid}: HTTP {code}"
     except Exception as exc:
         logger.exception("Reactome query failed")
         return f"Reactome query failed for {uid}: {exc}"

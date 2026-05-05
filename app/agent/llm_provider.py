@@ -271,7 +271,21 @@ class QwenProvider:
             elif isinstance(m, HumanMessage):
                 out.append({"role": "user", "content": text})
             elif isinstance(m, AIMessage):
-                out.append({"role": "assistant", "content": text})
+                msg_dict: dict[str, Any] = {"role": "assistant", "content": text or None}
+                tc_list = getattr(m, "tool_calls", None)
+                if tc_list:
+                    msg_dict["tool_calls"] = [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc["args"], ensure_ascii=False),
+                            },
+                        }
+                        for tc in tc_list
+                    ]
+                out.append(msg_dict)
             elif isinstance(m, ToolMessage):
                 # OpenAI requires tool_call_id; fall back to a synthetic one.
                 out.append({
