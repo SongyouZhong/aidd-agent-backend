@@ -62,13 +62,16 @@ class Settings(BaseSettings):
     QWEN_MODEL: str = "Qwen/Qwen3.6-35B-A3B-FP8"
     QWEN_API_KEY: str = "EMPTY"  # vLLM ignores by default
 
+    # --- Semantic Scholar ---
+    SEMANTIC_SCHOLAR_API_KEY: str | None = None
+
     # --- LLM fallback (Gemini → local Qwen on 503/429) ---
     LLM_FALLBACK_ENABLED: bool = True
     LLM_CIRCUIT_BREAK_SECONDS: int = 300  # how long to skip primary after a failure
 
     # --- Auto-Compaction (design doc §9.2) ---
     DISABLE_AUTO_COMPACT: bool = False
-    AUTOCOMPACT_BUFFER_TOKENS: int = 13_000
+    AUTOCOMPACT_BUFFER_TOKENS: int = 144_000
     MAX_OUTPUT_TOKENS_FOR_SUMMARY: int = 20_000
     MAX_CONSECUTIVE_COMPACT_FAILURES: int = 3
 

@@ -7,7 +7,7 @@ Implements the mandatory three-step pipeline from the backend design doc §7.2.1
     3. Map-Reduce summarisation (``app.tools.mapreduce``)
 
 Plus a hard guard: NO tool may return more than ``MAX_TOOL_TOKENS`` tokens
-(AC §2.2 — "any single tool payload must never exceed 3000 tokens").
+(AC §2.2 — "any single tool payload must never exceed 40000 tokens").
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any, ParamSpec, TypeVar
 _CHARS_PER_TOKEN = 3
 
 # Hard ceiling enforced by ``cap_tokens`` and ``@guarded_tool``.
-MAX_TOOL_TOKENS = 3_000
+MAX_TOOL_TOKENS = 40_000
 TRUNCATION_NOTICE = "\n\n…[truncated by preprocessing pipeline; raw output stored as sidechain]"
 
 

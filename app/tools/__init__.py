@@ -13,6 +13,7 @@ from app.tools.drug import (
     query_pubchem,
 )
 from app.tools.pathway import query_kegg, query_reactome, query_stringdb
+from app.tools.graph_rag import query_wikipathways_graph
 from app.tools.peptide import query_chembl_peptides
 from app.tools.structure import (
     query_alphafold,
@@ -43,6 +44,7 @@ __all__ = [
     "query_kegg",
     "query_reactome",
     "query_stringdb",
+    "query_wikipathways_graph",
     "query_chembl_target_activities",
     "query_pubchem",
     "query_gtopdb",

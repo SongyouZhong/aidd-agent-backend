@@ -19,6 +19,7 @@ dependencies:
   - psycopg2                      # Alembic 同步连接
   - redis-py
   - aiobotocore                   # 异步 S3/SeaweedFS 客户端
+  - neo4j                         # Neo4j Graph DB client
 
   # --- Auth & Validation ---
   - pydantic-settings
@@ -31,6 +32,9 @@ dependencies:
   - langchain-core
   - google-genai
   - openai  # OpenAI-compatible client for local vLLM (Qwen fallback)
+  - pip:
+      - langchain-neo4j           # GraphRAG support
+      - langchain-openai          # For ChatOpenAI used in GraphQAChain
 
   # --- Data Pipeline ---
   - pydantic>=2.0

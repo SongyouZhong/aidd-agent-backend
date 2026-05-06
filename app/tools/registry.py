@@ -23,7 +23,13 @@ from app.tools.drug import (
     query_pubchem,
 )
 from app.tools.literature import query_arxiv, query_pubmed
+from app.tools.semantic_scholar import (
+    query_semantic_scholar_citations,
+    query_semantic_scholar_paper,
+    query_semantic_scholar_search,
+)
 from app.tools.pathway import query_kegg, query_reactome, query_stringdb
+from app.tools.graph_rag import query_wikipathways_graph
 from app.tools.peptide import query_chembl_peptides
 from app.tools.structure import (
     query_alphafold,
@@ -39,6 +45,9 @@ if TYPE_CHECKING:
 # Categorisation drives whether the tool is in the default System Prompt.
 CORE_TOOL_NAMES = {"query_pubmed", "query_arxiv"}
 DEFERRED_TOOL_NAMES = {
+    "query_semantic_scholar_search",
+    "query_semantic_scholar_paper",
+    "query_semantic_scholar_citations",
     "query_uniprot",
     "query_chembl",
     # Phase B — structure
@@ -54,6 +63,7 @@ DEFERRED_TOOL_NAMES = {
     "query_kegg",
     "query_reactome",
     "query_stringdb",
+    "query_wikipathways_graph",
     # Phase B — drug
     "query_chembl_target_activities",
     "query_pubchem",
@@ -159,6 +169,22 @@ def _build_default_registry() -> ToolRegistry:
         category="core",
         keywords=["arxiv", "preprint", "paper", "literature"],
     )
+    # --- Semantic Scholar --------------------------------------------
+    reg.register(
+        query_semantic_scholar_search,
+        category="deferred",
+        keywords=["semantic scholar", "literature", "paper", "search", "文献", "检索", "论文"],
+    )
+    reg.register(
+        query_semantic_scholar_paper,
+        category="deferred",
+        keywords=["semantic scholar", "paper details", "文献详情", "论文详情"],
+    )
+    reg.register(
+        query_semantic_scholar_citations,
+        category="deferred",
+        keywords=["semantic scholar", "citation", "reference", "引用", "参考文献"],
+    )
     reg.register(
         query_uniprot,
         category="deferred",
@@ -230,6 +256,11 @@ def _build_default_registry() -> ToolRegistry:
         query_stringdb,
         category="deferred",
         keywords=["string", "ppi", "interaction", "network", "相互作用"],
+    )
+    reg.register(
+        query_wikipathways_graph,
+        category="deferred",
+        keywords=["wikipathways", "graph", "network", "pathway", "知识图谱", "网络", "graphrag"],
     )
     # --- Phase B: drug -----------------------------------------------
     reg.register(

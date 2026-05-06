@@ -67,7 +67,7 @@ COMPOSITION_TOOLS = [
     "query_interpro",
 ]
 FUNCTION_TOOLS = ["query_opentarget", "query_monarch", "query_quickgo"]
-PATHWAY_TOOLS = ["query_kegg", "query_reactome", "query_stringdb"]
+PATHWAY_TOOLS = ["query_kegg", "query_reactome", "query_stringdb", "query_wikipathways_graph"]
 DRUGS_TOOLS = [
     "query_chembl_target_activities",
     "query_pubchem",
@@ -189,8 +189,8 @@ async def _run_node_loop(
         messages.append(
             HumanMessage(
                 content=(
-                    "请根据以上所有工具查询结果，直接输出 <answer>...</answer> "
-                    "格式的最终 JSON 总结，不要再调用任何工具。"
+                    "Based on all the tool query results above, please directly output the final JSON summary in the "
+                    "<answer>...</answer> format, and do not call any more tools."
                 )
             )
         )
@@ -215,12 +215,12 @@ async def _safe_node(
 ) -> tuple[dict[str, Any], list[str]]:
     """Run one node, catch exceptions and timeouts, return (result, notes)."""
     sys_prompt = _render(template, target_query=target_query)
-    user_prompt = f"开始执行节点 [{name}]，目标靶点：{target_query}。"
+    user_prompt = f"Start executing node [{name}], target: {target_query}."
     if prior_context:
         user_prompt += (
-            f"\n\n❗ 强制约束：以下是已验证的 UniProt accession，"
-            f"调用任何工具的 uniprot_id 参数时必须严格使用这些值，"
-            f"禁止使用任何其他 accession（如 Q13168 等都是错误的）：\n{prior_context}"
+            f"\n\n❗ MANDATORY CONSTRAINT: The following are verified UniProt accessions. "
+            f"You MUST strictly use these values when calling any tool's uniprot_id parameter. "
+            f"The use of any other accession (such as Q13168, etc., which are incorrect) is prohibited:\n{prior_context}"
         )
     messages: list[BaseMessage] = []
     try:
@@ -234,17 +234,17 @@ async def _safe_node(
             timeout=NODE_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
-        notes_out = [f"节点 [{name}] 超时（>{NODE_TIMEOUT_SECONDS:.0f}s），跳过。"]
+        notes_out = [f"Node [{name}] timed out (>{NODE_TIMEOUT_SECONDS:.0f}s), skipped."]
         await _write_node_log(log_dir, name, target_query, messages, "", {}, notes_out)
         return {}, notes_out
     except Exception as exc:
         logger.exception("Node %s failed", name)
-        notes_out = [f"节点 [{name}] 异常：{exc!r}"]
+        notes_out = [f"Node [{name}] error: {exc!r}"]
         await _write_node_log(log_dir, name, target_query, messages, "", {}, notes_out)
         return {}, notes_out
     parsed = _extract_answer_json(last_text)
     if parsed is None:
-        notes_out = [f"节点 [{name}] 未输出可解析的 JSON。"]
+        notes_out = [f"Node [{name}] did not output parseable JSON."]
         await _write_node_log(log_dir, name, target_query, messages, last_text, {}, notes_out)
         return {}, notes_out
     await _write_node_log(log_dir, name, target_query, messages, last_text, parsed, [])
@@ -422,7 +422,7 @@ def build_target_discovery_graph(provider: Any):
         sub_json = json.dumps(sub_results, ensure_ascii=False, indent=2)
         sys_prompt = _render(SYNTHESIZE_PROMPT, sub_results_json=sub_json)
         user_prompt = (
-            f"靶点：{state['target_query']}。请整合上述子节点结果输出 TargetReport。"
+            f"Target: {state['target_query']}. Please integrate the sub-node results above and output the TargetReport."
         )
         try:
             resp = await asyncio.wait_for(

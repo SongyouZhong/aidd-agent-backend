@@ -24,6 +24,20 @@ logger = logging.getLogger(__name__)
 
 # --- internal helpers --------------------------------------------------
 
+import re
+
+def _parse_year_range(year_str: str) -> tuple[str, str] | None:
+    """Parse year string like '2024' or '2021-2024' into start/end years."""
+    if not year_str:
+        return None
+    match = re.match(r"^(\d{4})(?:-(\d{4}))?$", str(year_str).strip())
+    if not match:
+        return None
+    start_year = match.group(1)
+    end_year = match.group(2) if match.group(2) else start_year
+    return start_year, end_year
+
+
 def _format_papers(papers: list[Paper]) -> str:
     if not papers:
         return "No papers found."
@@ -112,20 +126,30 @@ def _arxiv_query_sync(query: str, max_papers: int) -> list[Paper]:
 
 @tool
 @guarded_tool(max_tokens=MAX_TOOL_TOKENS)
-async def query_pubmed(query: str, max_papers: int = 5) -> str:
+async def query_pubmed(query: str, year: str = None, max_papers: int = 50) -> str:
     """Search PubMed for biomedical literature.
 
     Args:
         query: Free-form search query, e.g. "EGFR T790M resistance".
-        max_papers: Maximum number of papers to return (1-20).
+        year: Optional year filter, e.g. "2023-2025" or "2024".
+        max_papers: Maximum number of papers to return (1-100).
 
     Returns a markdown summary with title, journal, year, PMID/DOI,
     and abstract for each result. Always cite PMID/DOI in downstream
     answers (anti-hallucination policy).
     """
-    max_papers = max(1, min(int(max_papers), 20))
+    max_papers = max(1, min(int(max_papers), 100))
+    
+    final_query = query
+    if year:
+        parsed = _parse_year_range(year)
+        if parsed:
+            start_year, end_year = parsed
+            date_filter = f'("{start_year}/01/01"[Date - Publication] : "{end_year}/12/31"[Date - Publication])'
+            final_query = f"({query}) AND {date_filter}"
+
     try:
-        papers = await _pubmed_query_async(query, max_papers)
+        papers = await _pubmed_query_async(final_query, max_papers)
     except Exception as exc:
         logger.exception("PubMed query failed")
         return f"PubMed query failed: {exc}"
@@ -134,16 +158,26 @@ async def query_pubmed(query: str, max_papers: int = 5) -> str:
 
 @tool
 @guarded_tool(max_tokens=MAX_TOOL_TOKENS)
-async def query_arxiv(query: str, max_papers: int = 5) -> str:
+async def query_arxiv(query: str, year: str = None, max_papers: int = 50) -> str:
     """Search arXiv for preprints (biology / chemistry / medicine).
 
     Args:
         query: Free-form search query.
-        max_papers: Maximum number of papers (1-20).
+        year: Optional year filter, e.g. "2023-2025" or "2024".
+        max_papers: Maximum number of papers (1-100).
     """
-    max_papers = max(1, min(int(max_papers), 20))
+    max_papers = max(1, min(int(max_papers), 100))
+    
+    final_query = query
+    if year:
+        parsed = _parse_year_range(year)
+        if parsed:
+            start_year, end_year = parsed
+            date_filter = f"submittedDate:[{start_year}0101 TO {end_year}1231]"
+            final_query = f"({query}) AND {date_filter}"
+
     try:
-        papers = await asyncio.to_thread(_arxiv_query_sync, query, max_papers)
+        papers = await asyncio.to_thread(_arxiv_query_sync, final_query, max_papers)
     except Exception as exc:
         logger.exception("arXiv query failed")
         return f"arXiv query failed: {exc}"
