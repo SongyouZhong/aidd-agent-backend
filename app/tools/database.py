@@ -151,7 +151,13 @@ async def query_uniprot(query: str, max_results: int = 5) -> str:
             fn = fn[:200] + "…"
         lines.append(f"| {p.accession} | {p.gene or '-'} | {p.organism or '-'} | "
                      f"{p.sequence_length or '-'} | {fn or '-'} |")
-    return "\n".join(lines)
+    
+    result = "\n".join(lines)
+    for p in proteins:
+        if p.sequence:
+            result += f"\n\n> Sequence for {p.accession}:\n{p.sequence}"
+            
+    return result
 
 
 # --- ChEMBL ------------------------------------------------------------

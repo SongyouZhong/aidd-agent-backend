@@ -110,7 +110,7 @@ async def _invoke_tool(name: str, args: dict[str, Any]) -> str:
     if getattr(impl, "coroutine", None) is not None:
         result = await impl.ainvoke(args)
     else:
-        result = impl.invoke(args)
+        result = await asyncio.to_thread(impl.invoke, args)
     return str(result)
 
 

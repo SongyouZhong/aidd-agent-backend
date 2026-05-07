@@ -28,7 +28,7 @@ representative PDB code, and AlphaFold ID.
 Execution order recommendation:
 1) query_uniprot to resolve accession + sequence;
 2) query_pdb_identifiers to get all PDBs associated with that UniProt;
-3) select 1-2 PDBs with the highest resolution -> query_pdb to get details;
+3) CRITICAL CONSTRAINT: You MUST EXACTLY select ONLY the TOP 1 highest resolution PDB ID. Do NOT invoke query_pdb more than once per protein chain. Failure to obey will cause system out of memory. -> query_pdb to get details;
 4) if there is no experimental structure, call query_alphafold;
 5) call query_interpro to list key domains.
 
@@ -76,13 +76,16 @@ Task: Find effective drugs for the target **{{ target_query }}**:
 - >= 3 small molecules (SMILES + activity values must be provided)
 - >= 1 peptide (amino acid sequence must be provided; if neither IUPHAR nor ChEMBL has it, state clearly that data
   sources are insufficient, do not fabricate)
+- >= 1 antibody drug (if available, provide sequence and source)
 
 Final <answer> JSON:
 {"small_molecule_drugs":[{"name":..., "chembl_id":..., "smiles":...,
                           "max_phase":..., "activity":{"type":"IC50",
                           "value_nm":..., "assay":...}}],
  "peptide_drugs":[{"name":..., "sequence":..., "source":...,
-                   "max_phase":..., "url":...}]}
+                   "max_phase":..., "url":...}],
+ "antibody_drugs":[{"name":..., "sequence":..., "source":...,
+                    "max_phase":..., "url":...}]}
 """
 
 SYNTHESIZE_PROMPT = """\
@@ -107,6 +110,7 @@ Final output (must strictly conform to the schema, placed inside the <answer> ta
   "pathways": [...],
   "small_molecule_drugs": [...],
   "peptide_drugs": [...],
+  "antibody_drugs": [...],
   "notes": [...]
 }
 """
