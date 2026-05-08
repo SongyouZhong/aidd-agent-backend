@@ -10,7 +10,7 @@ from app.tools.graph_rag import query_wikipathways_graph
 async def main():
     load_dotenv()
     print("Testing GraphRAG query...")
-    query = "What genes are involved in Apoptosis?"
+    query = "What pathways involve the gene TARDBP?"
     
     # query_wikipathways_graph is a LangChain @tool, we can invoke it.
     result = query_wikipathways_graph.invoke({"query": query})

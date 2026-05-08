@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: str | None = None
+    API_CACHE_TTL_SECONDS: int = 7 * 24 * 3600  # 7 days
 
     # --- SeaweedFS / S3 ---
     S3_ENDPOINT_URL: str = "http://localhost:8333"
@@ -57,10 +58,14 @@ class Settings(BaseSettings):
 
     # --- LLM ---
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_MODELS: str = "gemini-3-flash-preview"
     QWEN_BASE_URL: str | None = None
     QWEN_MODEL: str = "Qwen/Qwen3.6-35B-A3B-FP8"
     QWEN_API_KEY: str = "EMPTY"  # vLLM ignores by default
+
+    # --- LLM Context Windows ---
+    EXTERNAL_CONTEXT_WINDOW: int = 1_048_576
+    LOCAL_CONTEXT_WINDOW: int = 131_072
 
     # --- Semantic Scholar ---
     SEMANTIC_SCHOLAR_API_KEY: str | None = None
@@ -71,7 +76,7 @@ class Settings(BaseSettings):
 
     # --- Auto-Compaction (design doc §9.2) ---
     DISABLE_AUTO_COMPACT: bool = False
-    AUTOCOMPACT_BUFFER_TOKENS: int = 144_000
+    AUTOCOMPACT_THRESHOLD_PERCENT: float = 0.8
     MAX_OUTPUT_TOKENS_FOR_SUMMARY: int = 20_000
     MAX_CONSECUTIVE_COMPACT_FAILURES: int = 3
 

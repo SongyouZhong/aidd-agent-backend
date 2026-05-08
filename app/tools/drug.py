@@ -228,12 +228,15 @@ async def query_gtopdb(target_name: str, max_results: int = 25) -> str:
         if len(ligand_ids) >= max_results:
             break
 
+    sem = asyncio.Semaphore(5)
+
     async def _fetch_ligand(lid: int) -> dict[str, Any] | None:
-        try:
-            lig = await query_rest_api(f"{GTOPDB_BASE}/ligands/{lid}")
-        except Exception as exc:
-            logger.warning("GtoPdb ligand fetch failed for %s: %s", lid, exc)
-            return None
+        async with sem:
+            try:
+                lig = await query_rest_api(f"{GTOPDB_BASE}/ligands/{lid}")
+            except Exception as exc:
+                logger.warning("GtoPdb ligand fetch failed for %s: %s", lid, exc)
+                return None
         if not isinstance(lig, dict):
             return None
         l_type = (lig.get("type") or "").lower()

@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.agent.llm_provider import reset_failed_models
 from app.agent.target_discovery_graph import run_target_discovery
 from app.models.pathway_drug import (
     DiseaseAssociation,
@@ -298,6 +299,7 @@ async def discover_target(
     session_id: uuid.UUID | None = None,
 ) -> TargetReport:
     """Run the discovery sub-graph end-to-end and persist the result."""
+    reset_failed_models()
     report = await run_target_discovery(provider, target_query)
     return await persist_report(
         db, report=report, user_id=user_id, session_id=session_id

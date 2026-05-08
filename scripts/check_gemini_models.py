@@ -86,7 +86,7 @@ async def check_models():
                 except Exception as e:
                     print(f"  ❌ {model:<40} → 错误: {e}")
             
-            print(f"\n💡 建议：将 .env 中的 GEMINI_MODEL 设置为上面标记 ✅ 的模型。")
+            print(f"\n💡 建议：将 .env 中的 GEMINI_MODELS 设置为上面标记 ✅ 的模型。")
 
         except httpx.ConnectError:
             print("❌ 无法连接到 Google API。请检查网络或代理设置。")

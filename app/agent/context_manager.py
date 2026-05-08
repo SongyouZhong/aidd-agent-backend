@@ -29,15 +29,6 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Model context windows (design doc §9.2)
-MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "gemini-2.5-flash": 1_048_576,
-    "gemini-2.5-pro": 1_048_576,
-    "Qwen3.6-35B-A3B-FP8": 131_072,
-}
-_DEFAULT_WINDOW = 131_072
-
-
 # --- Token counting ---------------------------------------------------
 
 def count_tokens(text: str) -> int:
@@ -57,12 +48,14 @@ def count_tokens_messages(messages: Sequence[BaseMessage]) -> int:
 
 
 def get_effective_context_window(model: str) -> int:
-    window = MODEL_CONTEXT_WINDOWS.get(model, _DEFAULT_WINDOW)
+    is_local = (model == settings.QWEN_MODEL)
+    window = settings.LOCAL_CONTEXT_WINDOW if is_local else settings.EXTERNAL_CONTEXT_WINDOW
     return window - settings.MAX_OUTPUT_TOKENS_FOR_SUMMARY
 
 
 def get_auto_compact_threshold(model: str) -> int:
-    return get_effective_context_window(model) - settings.AUTOCOMPACT_BUFFER_TOKENS
+    window = get_effective_context_window(model)
+    return int(window * settings.AUTOCOMPACT_THRESHOLD_PERCENT)
 
 
 # --- Per-session tracking --------------------------------------------
@@ -242,7 +235,6 @@ def apply_compaction(
 __all__ = [
     "CompactTrackingState",
     "CompactionResult",
-    "MODEL_CONTEXT_WINDOWS",
     "apply_compaction",
     "count_tokens",
     "count_tokens_messages",

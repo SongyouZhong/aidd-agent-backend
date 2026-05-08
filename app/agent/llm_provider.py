@@ -11,6 +11,7 @@ providers obey the same contract so the LangGraph node is identical.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -56,6 +57,24 @@ class StreamChunk:
     tool_name: str = ""
     tool_args: dict[str, Any] = field(default_factory=dict)
     tool_call_id: str = ""
+
+
+# --- Round-scoped Failure Tracking -------------------------------------
+
+_failed_models_in_round: contextvars.ContextVar[set[str]] = contextvars.ContextVar("failed_models_in_round")
+
+def get_failed_models() -> set[str]:
+    """Get the set of failed models for the current dialogue round."""
+    try:
+        return _failed_models_in_round.get()
+    except LookupError:
+        s: set[str] = set()
+        _failed_models_in_round.set(s)
+        return s
+
+def reset_failed_models() -> None:
+    """Reset the failed models tracking for a new dialogue round."""
+    _failed_models_in_round.set(set())
 
 
 # --- Fake provider (offline-friendly) ----------------------------------
@@ -506,35 +525,25 @@ class QwenProvider:
             )
 
 
-# --- Fallback wrapper (process-level circuit breaker) ----------------
+# --- Fallback wrapper (round-scoped circuit breaker) -------------------
 
 class FallbackLLMProvider:
-    """Primary provider with automatic fallback to a secondary on 503/429.
+    """Primary providers with automatic fallback to a secondary.
 
-    A *process-level* circuit breaker is opened when the primary returns
-    a retryable infrastructure error (UNAVAILABLE / RESOURCE_EXHAUSTED /
-    HTTP 503 / 429). While open, all calls go directly to the secondary.
-    After the configured timeout elapses, the next call probes the primary
-    again. Other errors (4xx content filtering, auth) propagate as-is.
+    A *round-level* circuit breaker is applied when a primary provider returns
+    a retryable infrastructure error (UNAVAILABLE / HTTP 503 / 429). The failed
+    model is marked as unavailable and will be skipped for the remainder of
+    the current dialogue round. If all primary providers fail, it falls back
+    to the secondary provider.
     """
-
-    # Class-level state shared across instances within one process.
-    _circuit_open_until: float = 0.0
-    _lock: asyncio.Lock = asyncio.Lock()
 
     def __init__(
         self,
-        primary: Any,
-        secondary: Any,
-        circuit_break_seconds: int | None = None,
+        primaries: list[Any],
+        secondary: Any | None = None,
     ) -> None:
-        self.primary = primary
+        self.primaries = primaries
         self.secondary = secondary
-        self.circuit_break_seconds = (
-            circuit_break_seconds
-            if circuit_break_seconds is not None
-            else settings.LLM_CIRCUIT_BREAK_SECONDS
-        )
 
     @staticmethod
     def _is_retryable_failure(exc: BaseException) -> bool:
@@ -554,38 +563,40 @@ class FallbackLLMProvider:
                 return True
         return False
 
-    @classmethod
-    def _circuit_is_open(cls) -> bool:
-        return cls._circuit_open_until > time.monotonic()
-
-    @classmethod
-    async def _open_circuit(cls, seconds: int) -> None:
-        async with cls._lock:
-            cls._circuit_open_until = time.monotonic() + seconds
-
     async def generate(
         self,
         messages: list[BaseMessage],
         tools: list[Any] | None = None,
     ) -> AIResponse:
-        # If breaker is open, skip primary entirely.
-        if self._circuit_is_open():
+        failed_models = get_failed_models()
+        last_exc = None
+
+        for provider in self.primaries:
+            if getattr(provider, "model", None) in failed_models:
+                continue
+
+            try:
+                return await provider.generate(messages, tools=tools)
+            except Exception as exc:
+                if not self._is_retryable_failure(exc):
+                    raise
+                model_name = getattr(provider, "model", "unknown")
+                logger.warning(
+                    "Primary LLM %s unavailable (%s: %s); failing over to next model",
+                    model_name,
+                    type(exc).__name__,
+                    exc,
+                )
+                failed_models.add(model_name)
+                last_exc = exc
+
+        # All primaries failed or none were available
+        if self.secondary:
             return await self.secondary.generate(messages, tools=tools)
 
-        try:
-            return await self.primary.generate(messages, tools=tools)
-        except Exception as exc:
-            if not self._is_retryable_failure(exc):
-                raise
-            logger.warning(
-                "Primary LLM unavailable (%s: %s); failing over to secondary "
-                "for %ds",
-                type(exc).__name__,
-                exc,
-                self.circuit_break_seconds,
-            )
-            await self._open_circuit(self.circuit_break_seconds)
-            return await self.secondary.generate(messages, tools=tools)
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("No available LLM providers to handle the request.")
 
     async def stream(
         self,
@@ -593,26 +604,40 @@ class FallbackLLMProvider:
         tools: list[Any] | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Streaming variant with fallback."""
-        if self._circuit_is_open():
+        failed_models = get_failed_models()
+        last_exc = None
+
+        for provider in self.primaries:
+            if getattr(provider, "model", None) in failed_models:
+                continue
+
+            try:
+                # Probe primary with stream; if it works, stream from it.
+                async for chunk in provider.stream(messages, tools=tools):
+                    yield chunk
+                return
+            except Exception as exc:
+                if not self._is_retryable_failure(exc):
+                    raise
+                model_name = getattr(provider, "model", "unknown")
+                logger.warning(
+                    "Primary LLM stream %s failed (%s: %s); falling over to next model",
+                    model_name,
+                    type(exc).__name__,
+                    exc,
+                )
+                failed_models.add(model_name)
+                last_exc = exc
+
+        # All primaries failed
+        if self.secondary:
             async for chunk in self.secondary.stream(messages, tools=tools):
                 yield chunk
             return
 
-        try:
-            # Probe primary with generate; if it works, stream from it.
-            # (Streaming errors are harder to recover from mid-stream.)
-            async for chunk in self.primary.stream(messages, tools=tools):
-                yield chunk
-        except Exception as exc:
-            if not self._is_retryable_failure(exc):
-                raise
-            logger.warning(
-                "Primary LLM stream failed (%s); falling over to secondary",
-                type(exc).__name__,
-            )
-            await self._open_circuit(self.circuit_break_seconds)
-            async for chunk in self.secondary.stream(messages, tools=tools):
-                yield chunk
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("No available LLM providers to handle the stream request.")
 
 
 # --- Factory -----------------------------------------------------------
@@ -622,21 +647,23 @@ def get_default_provider() -> Any:
 
     Resolution order:
       1. If ``AIDD_FORCE_FAKE_LLM`` is set → ``FakeLLMProvider`` (offline)
-      2. If Gemini key + Qwen base URL + fallback enabled → ``FallbackLLMProvider``
-      3. If Gemini key only → ``GeminiProvider``
-      4. Else → ``FakeLLMProvider``
+      2. Parse `GEMINI_MODELS` to create a list of `GeminiProvider`s.
+      3. Create `QwenProvider` if configured.
+      4. Wrap in `FallbackLLMProvider`
     """
     if os.environ.get("AIDD_FORCE_FAKE_LLM"):
         return FakeLLMProvider(
             script=[AIResponse(text="<answer>(forced offline mode)</answer>")]
         )
 
-    primary = None
+    primaries = []
     if settings.GEMINI_API_KEY:
-        try:
-            primary = GeminiProvider()
-        except Exception as exc:  # pragma: no cover
-            logger.warning("Failed to init GeminiProvider: %s", exc)
+        gemini_model_names = [m.strip() for m in settings.GEMINI_MODELS.split(",") if m.strip()]
+        for model_name in gemini_model_names:
+            try:
+                primaries.append(GeminiProvider(model=model_name))
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Failed to init GeminiProvider for model %s: %s", model_name, exc)
 
     secondary = None
     if settings.LLM_FALLBACK_ENABLED and settings.QWEN_BASE_URL:
@@ -645,14 +672,15 @@ def get_default_provider() -> Any:
         except Exception as exc:  # pragma: no cover
             logger.warning("Failed to init QwenProvider (fallback disabled): %s", exc)
 
-    if primary and secondary:
+    if primaries and secondary:
         logger.info(
-            "LLM provider: Gemini (primary) + Qwen (fallback, circuit=%ds)",
-            settings.LLM_CIRCUIT_BREAK_SECONDS,
+            "LLM provider: Gemini (%d models) + Qwen (fallback)",
+            len(primaries),
         )
-        return FallbackLLMProvider(primary=primary, secondary=secondary)
-    if primary:
-        return primary
+        return FallbackLLMProvider(primaries=primaries, secondary=secondary)
+    if primaries:
+        logger.info("LLM provider: Gemini (%d models) only", len(primaries))
+        return FallbackLLMProvider(primaries=primaries, secondary=None)
     if secondary:
         logger.info("LLM provider: Qwen only (no Gemini key)")
         return secondary

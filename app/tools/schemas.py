@@ -129,6 +129,7 @@ class Pathway(BaseModel):
     name: str
     description: str | None = None
     url: str | None = None
+    interactors: list[str] = Field(default_factory=list)
 
 
 class DiseaseAssociation(BaseModel):
@@ -174,6 +175,7 @@ class TargetReport(BaseModel):
     # Section 5: effective drugs
     small_molecule_drugs: list[Molecule] = Field(default_factory=list)
     peptide_drugs: list[Molecule] = Field(default_factory=list)
+    antibody_drugs: list[Molecule] = Field(default_factory=list)
 
     # Notes from each node (failure / partial coverage)
     notes: list[str] = Field(default_factory=list)

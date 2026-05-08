@@ -22,6 +22,7 @@ ingested into the local DB (Phase D, future work).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -71,28 +72,28 @@ async def query_chembl_peptides(target: str, max_results: int = 25) -> str:
             candidate_ids.append(mid)
 
     # 2) Filter ChEMBL molecules for peptide / protein modality.
+    # Limit candidates to avoid excessive API requests
+    candidate_limit = max(50, max_results * 2)
+    candidate_ids = candidate_ids[:candidate_limit]
+
     out: list[dict] = []
-    for mid in candidate_ids:
-        try:
-            mol = await query_rest_api(f"{CHEMBL_BASE}/molecule/{mid}.json")
-        except Exception as exc:
-            logger.debug("Molecule lookup failed for %s: %s", mid, exc)
-            continue
-        if not isinstance(mol, dict):
-            continue
-        m_type = (mol.get("molecule_type") or "").lower()
-        if not any(k in m_type for k in ("peptide", "oligopeptide", "protein")):
-            continue
-        struct = mol.get("molecule_structures") or {}
-        # ChEMBL embeds the AA sequence in helm_notation / sequence fields
-        # depending on the entry; pull whichever is present.
-        seq = (
-            struct.get("sequence")
-            or struct.get("helm_notation")
-            or None
-        )
-        out.append(
-            {
+    sem = asyncio.Semaphore(5)
+
+    async def _fetch_peptide(mid: str) -> dict | None:
+        async with sem:
+            try:
+                mol = await query_rest_api(f"{CHEMBL_BASE}/molecule/{mid}.json")
+            except Exception as exc:
+                logger.debug("Molecule lookup failed for %s: %s", mid, exc)
+                return None
+            if not isinstance(mol, dict):
+                return None
+            m_type = (mol.get("molecule_type") or "").lower()
+            if not any(k in m_type for k in ("peptide", "oligopeptide", "protein")):
+                return None
+            struct = mol.get("molecule_structures") or {}
+            seq = struct.get("sequence") or struct.get("helm_notation") or None
+            return {
                 "molecule_chembl_id": mid,
                 "pref_name": mol.get("pref_name"),
                 "molecule_type": mol.get("molecule_type"),
@@ -101,7 +102,11 @@ async def query_chembl_peptides(target: str, max_results: int = 25) -> str:
                 "canonical_smiles": struct.get("canonical_smiles"),
                 "url": f"https://www.ebi.ac.uk/chembl/compound_report_card/{mid}/",
             }
-        )
+
+    fetched_mols = await asyncio.gather(*[_fetch_peptide(mid) for mid in candidate_ids])
+    for mol_data in fetched_mols:
+        if mol_data is not None:
+            out.append(mol_data)
         if len(out) >= max_results:
             break
 

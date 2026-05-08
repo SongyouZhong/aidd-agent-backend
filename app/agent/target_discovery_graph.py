@@ -67,7 +67,7 @@ COMPOSITION_TOOLS = [
     "query_interpro",
 ]
 FUNCTION_TOOLS = ["query_opentarget", "query_monarch", "query_quickgo"]
-PATHWAY_TOOLS = ["query_kegg", "query_reactome", "query_stringdb", "query_wikipathways_graph"]
+PATHWAY_TOOLS = ["query_kegg", "query_reactome", "query_stringdb", "query_graph_schema", "query_wikipathways_graph"]
 DRUGS_TOOLS = [
     "query_chembl_target_activities",
     "query_pubchem",
@@ -150,17 +150,12 @@ def _extract_answer_json(text: str) -> dict[str, Any] | None:
 async def _run_node_loop(
     *,
     provider: Any,
-    system_prompt: str,
-    user_prompt: str,
+    messages: list[BaseMessage],
     tool_names: list[str],
     max_steps: int = MAX_NODE_STEPS,
-) -> tuple[str, list[BaseMessage]]:
-    """Bounded ReAct loop scoped to ``tool_names``. Returns (last_text, msgs)."""
+) -> str:
+    """Bounded ReAct loop scoped to ``tool_names``. Mutates `messages` in place. Returns last_text."""
     tools = _resolve_tools(tool_names)
-    messages: list[BaseMessage] = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt),
-    ]
     last_text = ""
     for _ in range(max_steps):
         resp: AIResponse = await provider.generate(messages=messages, tools=tools)
@@ -200,7 +195,7 @@ async def _run_node_loop(
                 last_text = final_resp.text
         except Exception as exc:
             logger.warning("Forced final summary call failed: %s", exc)
-    return last_text, messages
+    return last_text
 
 
 async def _safe_node(
@@ -212,6 +207,7 @@ async def _safe_node(
     tool_names: list[str],
     prior_context: str | None = None,
     log_dir: pathlib.Path | None = None,
+    timeout_seconds: float = NODE_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, Any], list[str]]:
     """Run one node, catch exceptions and timeouts, return (result, notes)."""
     sys_prompt = _render(template, target_query=target_query)
@@ -222,21 +218,49 @@ async def _safe_node(
             f"You MUST strictly use these values when calling any tool's uniprot_id parameter. "
             f"The use of any other accession (such as Q13168, etc., which are incorrect) is prohibited:\n{prior_context}"
         )
-    messages: list[BaseMessage] = []
+    messages: list[BaseMessage] = [
+        SystemMessage(content=sys_prompt),
+        HumanMessage(content=user_prompt),
+    ]
     try:
-        last_text, messages = await asyncio.wait_for(
+        last_text = await asyncio.wait_for(
             _run_node_loop(
                 provider=provider,
-                system_prompt=sys_prompt,
-                user_prompt=user_prompt,
+                messages=messages,
                 tool_names=tool_names,
             ),
-            timeout=NODE_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
     except asyncio.TimeoutError:
-        notes_out = [f"Node [{name}] timed out (>{NODE_TIMEOUT_SECONDS:.0f}s), skipped."]
-        await _write_node_log(log_dir, name, target_query, messages, "", {}, notes_out)
-        return {}, notes_out
+        logger.warning("Node [%s] timed out (>%.0fs). Attempting fallback summarization.", name, timeout_seconds)
+        notes_out = [f"Node [{name}] timed out (>{timeout_seconds:.0f}s), attempted partial summarization."]
+        messages.append(
+            HumanMessage(
+                content=(
+                    "Execution time limit reached. Based on the tool query results gathered so far, "
+                    "please directly output the final JSON summary in the <answer>...</answer> format. "
+                    "Do not call any more tools."
+                )
+            )
+        )
+        try:
+            final_resp: AIResponse = await asyncio.wait_for(
+                provider.generate(messages=messages, tools=None),
+                timeout=60.0,
+            )
+            last_text = final_resp.text or ""
+            parsed = _extract_answer_json(last_text)
+            if parsed is None:
+                notes_out.append(f"Node [{name}] partial summarization did not output parseable JSON.")
+                parsed = {}
+        except Exception as exc:
+            logger.warning("Node [%s] fallback summarization failed: %s", name, exc)
+            notes_out.append(f"Node [{name}] fallback summarization failed: {exc!r}")
+            last_text = ""
+            parsed = {}
+            
+        await _write_node_log(log_dir, name, target_query, messages, last_text, parsed, notes_out)
+        return parsed, notes_out
     except Exception as exc:
         logger.exception("Node %s failed", name)
         notes_out = [f"Node [{name}] error: {exc!r}"]
@@ -397,6 +421,7 @@ def build_target_discovery_graph(provider: Any):
             tool_names=PATHWAY_TOOLS,
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
             log_dir=run_log_dir,
+            timeout_seconds=300.0,
         )
         sub = dict(state.get("sub_results") or {})
         sub["pathway"] = result
@@ -412,6 +437,7 @@ def build_target_discovery_graph(provider: Any):
             tool_names=DRUGS_TOOLS,
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
             log_dir=run_log_dir,
+            timeout_seconds=300.0,
         )
         sub = dict(state.get("sub_results") or {})
         sub["drugs"] = result
@@ -433,7 +459,7 @@ def build_target_discovery_graph(provider: Any):
                     ],
                     tools=None,
                 ),
-                timeout=NODE_TIMEOUT_SECONDS,
+                timeout=300.0,
             )
             text = resp.text
         except asyncio.TimeoutError:

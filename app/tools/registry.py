@@ -29,7 +29,7 @@ from app.tools.semantic_scholar import (
     query_semantic_scholar_search,
 )
 from app.tools.pathway import query_kegg, query_reactome, query_stringdb
-from app.tools.graph_rag import query_wikipathways_graph
+from app.tools.graph_rag import query_graph_schema, query_wikipathways_graph
 from app.tools.peptide import query_chembl_peptides
 from app.tools.structure import (
     query_alphafold,
@@ -63,6 +63,7 @@ DEFERRED_TOOL_NAMES = {
     "query_kegg",
     "query_reactome",
     "query_stringdb",
+    "query_graph_schema",
     "query_wikipathways_graph",
     # Phase B — drug
     "query_chembl_target_activities",
@@ -256,6 +257,11 @@ def _build_default_registry() -> ToolRegistry:
         query_stringdb,
         category="deferred",
         keywords=["string", "ppi", "interaction", "network", "相互作用"],
+    )
+    reg.register(
+        query_graph_schema,
+        category="deferred",
+        keywords=["wikipathways", "graph", "schema", "meta", "图谱结构", "元数据"],
     )
     reg.register(
         query_wikipathways_graph,

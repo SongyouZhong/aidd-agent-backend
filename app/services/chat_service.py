@@ -31,7 +31,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from app.agent.llm_provider import StreamChunk, get_default_provider
+from app.agent.llm_provider import StreamChunk, get_default_provider, reset_failed_models
 from app.agent.prompt_renderer import assistant_prefill, render_system_prompt
 from app.core.config import settings
 from app.storage.manager import append_message, load_messages
@@ -54,6 +54,9 @@ async def stream_chat(
     This implements a manual ReAct loop with token-level streaming —
     the same approach production systems (ChatGPT, Claude) use.
     """
+    # ----- 0. Reset failed models for this new dialogue round -----
+    reset_failed_models()
+
     # ----- 1. Load history -----
     history = await load_messages(session_id)
 
