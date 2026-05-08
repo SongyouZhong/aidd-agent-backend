@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from jinja2 import Environment, StrictUndefined
 
-from app.agent.prompts.templates import ASSISTANT_PREFILL, SYSTEM_PROMPT_TEMPLATE
+from app.agent.prompts.templates import SYSTEM_PROMPT_TEMPLATE
 
 _env = Environment(undefined=StrictUndefined, autoescape=False, trim_blocks=False)
 _system_template = _env.from_string(SYSTEM_PROMPT_TEMPLATE)
@@ -36,8 +36,3 @@ def render_system_prompt(
         session_memory=session_memory or "",
         system_status=system_status,
     )
-
-
-def assistant_prefill() -> str:
-    """Returns the canonical ``<thought>\\n`` pre-fill string."""
-    return ASSISTANT_PREFILL

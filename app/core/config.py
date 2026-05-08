@@ -57,11 +57,16 @@ class Settings(BaseSettings):
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
 
     # --- LLM ---
+    LLM_PRIORITY: str = "gemini,deepseek"
     GEMINI_API_KEY: str | None = None
     GEMINI_MODELS: str = "gemini-3-flash-preview"
     QWEN_BASE_URL: str | None = None
     QWEN_MODEL: str = "Qwen/Qwen3.6-35B-A3B-FP8"
     QWEN_API_KEY: str = "EMPTY"  # vLLM ignores by default
+
+    DEEPSEEK_API_KEY: str | None = None
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+    DEEPSEEK_MODELS: str = "deepseek-v4-pro,deepseek-v4-flash"
 
     # --- LLM Context Windows ---
     EXTERNAL_CONTEXT_WINDOW: int = 1_048_576

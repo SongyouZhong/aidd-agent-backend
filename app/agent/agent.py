@@ -42,7 +42,7 @@ from app.agent.context_manager import (
     maybe_compact,
 )
 from app.agent.llm_provider import AIResponse, FakeLLMProvider
-from app.agent.prompt_renderer import assistant_prefill, render_system_prompt
+from app.agent.prompt_renderer import render_system_prompt
 from app.agent.prompts.target_discovery import INTENT_ROUTER_PROMPT
 from app.core.config import settings
 from app.tools import default_registry, tool_search
@@ -135,10 +135,9 @@ def build_agent(provider: Any):
             )
         )
         history = _strip_system(compacted_messages)
-        prefill = AIMessage(content=assistant_prefill())
 
         result: AIResponse = await provider.generate(
-            messages=[system, *history, prefill],
+            messages=[system, *history],
             tools=active_tools + list(extra_tools.values()),
         )
 

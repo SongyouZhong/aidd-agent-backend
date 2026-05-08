@@ -111,15 +111,12 @@ async def stream_chat(
 
         try:
             async for chunk in provider.stream(llm_messages, tools=tools_for_llm):
-                if chunk.type == "text":
+                if chunk.type == "thinking":
+                    yield _sse({"event": "thinking_delta", "data": {"delta": chunk.content}})
+                elif chunk.type == "text":
                     round_text += chunk.content
                     full_text += chunk.content
-
-                    # Distinguish <thought> thinking from actual answer
-                    if _in_thought_block(full_text):
-                        yield _sse({"event": "thinking_delta", "data": {"delta": chunk.content}})
-                    else:
-                        yield _sse({"event": "content_delta", "data": {"delta": chunk.content}})
+                    yield _sse({"event": "content_delta", "data": {"delta": chunk.content}})
 
                 elif chunk.type == "tool_call":
                     tool_calls.append(chunk)
@@ -253,11 +250,6 @@ def _now_iso() -> str:
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
-
-
-def _in_thought_block(text: str) -> bool:
-    """True if text currently has an unclosed <thought> tag."""
-    return "<thought>" in text and "</thought>" not in text
 
 
 def _strip_system(messages: list[BaseMessage]) -> list[BaseMessage]:

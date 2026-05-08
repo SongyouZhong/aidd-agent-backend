@@ -30,14 +30,10 @@ System status: {{ system_status }}
 <critical_rules>
 1. Fabrication of facts is strictly prohibited. Any scientific conclusion must be closely followed by a source identifier [PMID:xxxxxxxx], [DOI:xx.xxxx/xxxx], or the URL returned by a tool.
 2. If the retrieval results are insufficient to answer, you must explicitly state "Currently no relevant data found through retrieval". The use of outdated information from training data is strictly prohibited.
-3. Please put your thinking process inside the <thought>...</thought> tags; put the final answer inside <answer>...</answer>.
-4. When the current core tools are insufficient to answer the user's question, call tool_search first to find professional tools, do not refuse directly.
-5. The content returned by tools has been processed through a refinement pipeline, and raw data is stored via the raw_data_uri bypass; when citing, just use the identifier returned by the tool, no need to repeat the raw JSON.
+3. When the current core tools are insufficient to answer the user's question, call tool_search first to find professional tools, do not refuse directly.
+4. The content returned by tools has been processed through a refinement pipeline, and raw data is stored via the raw_data_uri bypass; when citing, just use the identifier returned by the tool, no need to repeat the raw JSON.
 </critical_rules>
 """
-
-# Forced AIMessage prefix to guarantee thought/answer structure.
-ASSISTANT_PREFILL = "<thought>\n"
 
 # Used by Phase 5 / Auto-Compaction (defined here so all prompts live together).
 COMPACT_PROMPT = """\

@@ -52,7 +52,7 @@ class AIResponse:
 @dataclass
 class StreamChunk:
     """A single chunk from a streaming LLM response."""
-    type: str  # "text" | "tool_call"
+    type: str  # "text" | "tool_call" | "thinking"
     content: str = ""
     tool_name: str = ""
     tool_args: dict[str, Any] = field(default_factory=dict)
@@ -341,28 +341,25 @@ class GeminiProvider:
 
 # --- Qwen provider (local vLLM, OpenAI-compatible) -------------------
 
-class QwenProvider:
-    """Local Qwen3 served by vLLM via OpenAI-compatible API.
-
-    Used as a fallback when Gemini is unavailable (503 / 429).
-    """
+class OpenAICompatibleProvider:
+    """Base for OpenAI-compatible providers (vLLM, DeepSeek, etc.)."""
 
     def __init__(
         self,
-        base_url: str | None = None,
-        model: str | None = None,
-        api_key: str | None = None,
-        enable_thinking: bool = False,
+        base_url: str,
+        model: str,
+        api_key: str,
     ) -> None:
-        self.base_url = base_url or settings.QWEN_BASE_URL
-        self.model = model or settings.QWEN_MODEL
-        self.api_key = api_key or settings.QWEN_API_KEY
-        self.enable_thinking = enable_thinking
-        if not self.base_url:
-            raise RuntimeError("QWEN_BASE_URL not configured")
+        self.base_url = base_url
+        self.model = model
+        self.api_key = api_key
         from openai import AsyncOpenAI  # type: ignore
 
         self._client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
+
+    def _get_extra_body(self) -> dict[str, Any] | None:
+        """Return provider-specific extensions (e.g. thinking mode)."""
+        return None
 
     @staticmethod
     def _to_openai_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
@@ -390,7 +387,6 @@ class QwenProvider:
                     ]
                 out.append(msg_dict)
             elif isinstance(m, ToolMessage):
-                # OpenAI requires tool_call_id; fall back to a synthetic one.
                 out.append({
                     "role": "tool",
                     "content": text,
@@ -432,10 +428,11 @@ class QwenProvider:
             "temperature": 0.7,
             "top_p": 0.8,
             "max_tokens": 4096,
-            "extra_body": {
-                "chat_template_kwargs": {"enable_thinking": self.enable_thinking}
-            },
         }
+        extra = self._get_extra_body()
+        if extra:
+            kwargs["extra_body"] = extra
+
         if tools:
             oa_tools = self._langchain_tools_to_openai(tools)
             if oa_tools:
@@ -445,6 +442,9 @@ class QwenProvider:
         choice = resp.choices[0]
         msg = choice.message
         text = msg.content or ""
+        reasoning = getattr(msg, "reasoning_content", "")
+        if reasoning:
+            text = f"<thought>\n{reasoning}\n</thought>\n\n{text}"
 
         tool_call_requests: list[ToolCallRequest] = []
         for tc in (msg.tool_calls or []) or []:
@@ -472,7 +472,6 @@ class QwenProvider:
         messages: list[BaseMessage],
         tools: list[Any] | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        """Streaming variant using OpenAI-compatible SSE."""
         oa_messages = self._to_openai_messages(messages)
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -481,10 +480,11 @@ class QwenProvider:
             "top_p": 0.8,
             "max_tokens": 4096,
             "stream": True,
-            "extra_body": {
-                "chat_template_kwargs": {"enable_thinking": self.enable_thinking}
-            },
         }
+        extra = self._get_extra_body()
+        if extra:
+            kwargs["extra_body"] = extra
+
         if tools:
             oa_tools = self._langchain_tools_to_openai(tools)
             if oa_tools:
@@ -492,9 +492,12 @@ class QwenProvider:
 
         stream_resp = await self._client.chat.completions.create(**kwargs)
 
-        tc_buffer: dict[int, dict[str, Any]] = {}  # index -> {id, name, arguments}
+        tc_buffer: dict[int, dict[str, Any]] = {}
         async for chunk in stream_resp:
             delta = chunk.choices[0].delta
+            reasoning = getattr(delta, "reasoning_content", "")
+            if reasoning:
+                yield StreamChunk(type="thinking", content=reasoning)
             if delta.content:
                 yield StreamChunk(type="text", content=delta.content)
             if delta.tool_calls:
@@ -511,7 +514,6 @@ class QwenProvider:
                     if tc.function.arguments:
                         tc_buffer[idx]["arguments"] += tc.function.arguments
 
-        # Emit accumulated tool calls after stream ends.
         for buf in tc_buffer.values():
             try:
                 args = json.loads(buf["arguments"] or "{}")
@@ -523,6 +525,53 @@ class QwenProvider:
                 tool_args=args,
                 tool_call_id=buf["id"],
             )
+
+
+class QwenProvider(OpenAICompatibleProvider):
+    """Local Qwen3 served by vLLM via OpenAI-compatible API."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        enable_thinking: bool = False,
+    ) -> None:
+        super().__init__(
+            base_url=base_url or settings.QWEN_BASE_URL,
+            model=model or settings.QWEN_MODEL,
+            api_key=api_key or settings.QWEN_API_KEY,
+        )
+        self.enable_thinking = enable_thinking
+
+    def _get_extra_body(self) -> dict[str, Any] | None:
+        if self.enable_thinking:
+            return {"chat_template_kwargs": {"enable_thinking": True}}
+        return None
+
+
+class DeepSeekProvider(OpenAICompatibleProvider):
+    """DeepSeek API provider (V4 compatible)."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        enable_thinking: bool = True,  # V4 defaults to thinking enabled
+    ) -> None:
+        super().__init__(
+            base_url=base_url or settings.DEEPSEEK_BASE_URL,
+            model=model or settings.DEEPSEEK_MODELS.split(",")[0],
+            api_key=api_key or settings.DEEPSEEK_API_KEY,
+        )
+        self.enable_thinking = enable_thinking
+
+    def _get_extra_body(self) -> dict[str, Any] | None:
+        if self.enable_thinking:
+            # DeepSeek V4 Thinking Mode: https://api-docs.deepseek.com/guides/thinking_mode
+            return {"thinking": {"type": "enabled"}}
+        return None
 
 
 # --- Fallback wrapper (round-scoped circuit breaker) -------------------
@@ -643,13 +692,9 @@ class FallbackLLMProvider:
 # --- Factory -----------------------------------------------------------
 
 def get_default_provider() -> Any:
-    """Return the configured provider with optional Qwen fallback.
+    """Return the configured provider with dynamic priority and optional fallback.
 
-    Resolution order:
-      1. If ``AIDD_FORCE_FAKE_LLM`` is set → ``FakeLLMProvider`` (offline)
-      2. Parse `GEMINI_MODELS` to create a list of `GeminiProvider`s.
-      3. Create `QwenProvider` if configured.
-      4. Wrap in `FallbackLLMProvider`
+    Resolution order is determined by `settings.LLM_PRIORITY` (e.g., "gemini,deepseek").
     """
     if os.environ.get("AIDD_FORCE_FAKE_LLM"):
         return FakeLLMProvider(
@@ -657,40 +702,49 @@ def get_default_provider() -> Any:
         )
 
     primaries = []
-    if settings.GEMINI_API_KEY:
-        gemini_model_names = [m.strip() for m in settings.GEMINI_MODELS.split(",") if m.strip()]
-        for model_name in gemini_model_names:
-            try:
-                primaries.append(GeminiProvider(model=model_name))
-            except Exception as exc:  # pragma: no cover
-                logger.warning("Failed to init GeminiProvider for model %s: %s", model_name, exc)
+    priority_list = [p.strip().lower() for p in settings.LLM_PRIORITY.split(",") if p.strip()]
+
+    for p_type in priority_list:
+        if p_type == "gemini" and settings.GEMINI_API_KEY:
+            model_names = [m.strip() for m in settings.GEMINI_MODELS.split(",") if m.strip()]
+            for m in model_names:
+                try:
+                    primaries.append(GeminiProvider(model=m))
+                except Exception as exc:
+                    logger.warning("Failed to init GeminiProvider for %s: %s", m, exc)
+
+        elif p_type == "deepseek" and settings.DEEPSEEK_API_KEY:
+            model_names = [m.strip() for m in settings.DEEPSEEK_MODELS.split(",") if m.strip()]
+            for m in model_names:
+                try:
+                    primaries.append(DeepSeekProvider(model=m))
+                except Exception as exc:
+                    logger.warning("Failed to init DeepSeekProvider for %s: %s", m, exc)
 
     secondary = None
     if settings.LLM_FALLBACK_ENABLED and settings.QWEN_BASE_URL:
         try:
             secondary = QwenProvider()
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             logger.warning("Failed to init QwenProvider (fallback disabled): %s", exc)
 
-    if primaries and secondary:
+    if primaries:
         logger.info(
-            "LLM provider: Gemini (%d models) + Qwen (fallback)",
-            len(primaries),
+            "LLM providers: %s%s",
+            ", ".join(getattr(p, "model", "unknown") for p in primaries),
+            " + Qwen (fallback)" if secondary else "",
         )
         return FallbackLLMProvider(primaries=primaries, secondary=secondary)
-    if primaries:
-        logger.info("LLM provider: Gemini (%d models) only", len(primaries))
-        return FallbackLLMProvider(primaries=primaries, secondary=None)
+
     if secondary:
-        logger.info("LLM provider: Qwen only (no Gemini key)")
+        logger.info("LLM provider: Qwen only")
         return secondary
 
-    # Default scripted response — keeps offline dev usable.
     return FakeLLMProvider(
         script=[
             AIResponse(
                 text="<thought>offline-mode: no LLM configured</thought>"
-                     "<answer>当前为离线模式，未配置 GEMINI_API_KEY。</answer>"
+                     "<answer>当前为离线模式，未配置有效 LLM。</answer>"
             )
         ]
     )
