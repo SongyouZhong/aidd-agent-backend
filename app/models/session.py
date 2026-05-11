@@ -10,13 +10,14 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
 if TYPE_CHECKING:
+    from app.models.project import Project
     from app.models.user import User
 
 
@@ -32,7 +33,16 @@ class Session(Base):
         index=True,
         nullable=False,
     )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="新对话")
+    is_pinned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
 
     # Pointer to the latest snapshot in SeaweedFS (s3://aidd-data/sessions/{id}/...)
     s3_prefix: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -48,3 +58,4 @@ class Session(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="sessions")
+    project: Mapped["Project"] = relationship(back_populates="sessions")

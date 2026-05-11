@@ -1,7 +1,4 @@
-"""File upload API — upload / list / download / delete files per session.
-
-File content goes to SeaweedFS; metadata to PostgreSQL ``session_files``.
-"""
+"""File upload API — nested under /projects/{project_id}/sessions/{session_id}/files."""
 
 from __future__ import annotations
 
@@ -17,7 +14,7 @@ from app.models.user import User
 from app.schemas.file import FileResponse
 from app.services import file_service, session_service
 
-router = APIRouter(prefix="/sessions", tags=["files"])
+router = APIRouter(prefix="/projects/{project_id}/sessions", tags=["files"])
 
 
 @router.post(
@@ -26,14 +23,14 @@ router = APIRouter(prefix="/sessions", tags=["files"])
     status_code=201,
 )
 async def upload_file(
+    project_id: uuid.UUID,
     session_id: uuid.UUID,
     file: UploadFile = File(...),
     description: str | None = Form(default=None, max_length=500),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload a file to a session."""
-    session = await session_service.get_session(db, session_id, user.id)
+    session = await session_service.get_session(db, session_id, user.id, project_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -48,6 +45,7 @@ async def upload_file(
 
     record = await file_service.upload_file(
         db,
+        project_id=project_id,
         session_id=session_id,
         user_id=user.id,
         filename=file.filename,
@@ -63,15 +61,14 @@ async def upload_file(
     response_model=list[FileResponse],
 )
 async def list_files(
+    project_id: uuid.UUID,
     session_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all files for a session."""
-    session = await session_service.get_session(db, session_id, user.id)
+    session = await session_service.get_session(db, session_id, user.id, project_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-
     return await file_service.list_files(db, session_id)
 
 
@@ -80,17 +77,18 @@ async def list_files(
     response_model=FileResponse,
 )
 async def get_file(
+    project_id: uuid.UUID,
     session_id: uuid.UUID,
     file_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get metadata for a single file."""
     return await file_service.get_file(db, file_id, user.id)
 
 
 @router.get("/{session_id}/files/{file_id}/download")
 async def download_file(
+    project_id: uuid.UUID,
     session_id: uuid.UUID,
     file_id: uuid.UUID,
     user: User = Depends(get_current_user),
@@ -106,10 +104,10 @@ async def download_file(
     status_code=204,
 )
 async def delete_file(
+    project_id: uuid.UUID,
     session_id: uuid.UUID,
     file_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a file (S3 object + DB record)."""
     await file_service.delete_file(db, file_id, user.id)

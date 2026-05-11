@@ -27,6 +27,7 @@ class FileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    project_id: uuid.UUID
     session_id: uuid.UUID
     filename: str
     original_filename: str
@@ -39,6 +40,8 @@ class FileResponse(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def download_url(self) -> str:
-        """Construct the API download URL for this file."""
-        return f"/api/v1/sessions/{self.session_id}/files/{self.id}/download"
-
+        """API download URL for this file (relative to API host)."""
+        return (
+            f"/api/v1/projects/{self.project_id}"
+            f"/sessions/{self.session_id}/files/{self.id}/download"
+        )

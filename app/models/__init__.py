@@ -5,6 +5,7 @@ can discover them via ``Base.metadata``.
 """
 
 from app.models.user import User  # noqa: F401
+from app.models.project import Project  # noqa: F401
 from app.models.session import Session  # noqa: F401
 from app.models.target import ProteinRecord, Target  # noqa: F401
 from app.models.pathway_drug import (  # noqa: F401
@@ -21,6 +22,7 @@ from app.models.session_file import SessionFile  # noqa: F401
 
 __all__ = [
     "User",
+    "Project",
     "Session",
     "Target",
     "ProteinRecord",

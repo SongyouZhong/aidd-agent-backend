@@ -15,11 +15,13 @@ warnings.filterwarnings(
 )
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth as auth_router
 from app.api import chat as chat_router
 from app.api import files as files_router
 from app.api import messages as messages_router
+from app.api import projects as projects_router
 from app.api import sessions as sessions_router
 from app.api import targets as targets_router
 from app.api import traces as traces_router
@@ -49,11 +51,21 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["Content-Type", "Cache-Control"],
+    )
+
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:
         return {"status": "ok", "env": settings.APP_ENV}
 
     app.include_router(auth_router.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(projects_router.router, prefix=settings.API_V1_PREFIX)
     app.include_router(sessions_router.router, prefix=settings.API_V1_PREFIX)
     app.include_router(messages_router.router, prefix=settings.API_V1_PREFIX)
     app.include_router(chat_router.router, prefix=settings.API_V1_PREFIX)

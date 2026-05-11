@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 async def upload_file(
     db: AsyncSession,
     *,
+    project_id: uuid.UUID,
     session_id: uuid.UUID,
     user_id: uuid.UUID,
     filename: str,
@@ -71,6 +72,7 @@ async def upload_file(
     # --- create DB record ---
     record = SessionFile(
         id=fid,
+        project_id=project_id,
         session_id=session_id,
         user_id=user_id,
         filename=safe_name,

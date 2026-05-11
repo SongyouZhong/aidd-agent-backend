@@ -36,7 +36,9 @@ async def chat(
 
     To stop generation, the client aborts the fetch request via AbortController.
     """
-    session = await session_service.get_session(db, payload.session_id, user.id)
+    session = await session_service.get_session(
+        db, payload.session_id, user.id, payload.project_id
+    )
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
