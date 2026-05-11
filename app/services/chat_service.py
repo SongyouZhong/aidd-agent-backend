@@ -15,6 +15,7 @@ The core ``stream_chat()`` async generator orchestrates:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -31,9 +32,19 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from app.agent.context_manager import (
+    CompactTrackingState,
+    apply_compaction,
+    maybe_compact,
+)
 from app.agent.llm_provider import StreamChunk, get_default_provider, reset_failed_models
 from app.agent.prompt_renderer import render_system_prompt
 from app.core.config import settings
+from app.services.chat_context import (
+    ChatRequestContext,
+    current_chat_context,
+    progress_callback,
+)
 from app.storage.manager import append_message, load_messages
 from app.storage.s3 import s3_storage, trace_key
 from app.tools import default_registry, tool_search
@@ -50,6 +61,7 @@ async def stream_chat(
     user_id: str,
     plan_mode: bool = False,
     file_ids: list[str] | None = None,
+    project_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Execute agent conversation and yield SSE events.
 
@@ -58,6 +70,29 @@ async def stream_chat(
     """
     # ----- 0. Reset failed models for this new dialogue round -----
     reset_failed_models()
+
+    # ----- 0.5 Set per-request context for tools (e.g. run_target_discovery) -----
+    current_chat_context.set(
+        ChatRequestContext(
+            session_id=session_id,
+            user_id=user_id,
+            project_id=project_id,
+        )
+    )
+    # Bridge between background tools and the SSE generator.
+    progress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def _push_progress(event_type: str, payload: dict) -> None:
+        await progress_queue.put({"event": event_type, "data": payload})
+
+    progress_callback.set(_push_progress)
+
+    # Track tool-produced session files so we can attach them to the
+    # final assistant message (e.g. deep-research report downloads).
+    produced_file_ids: list[str] = []
+
+    # Auto-Compaction tracking (was previously held in agent_node state).
+    compact_tracking = CompactTrackingState()
 
     # ----- 1. Load history -----
     history = await load_messages(session_id)
@@ -102,6 +137,24 @@ async def stream_chat(
     # ----- 4. ReAct loop -----
     while total_rounds < MAX_TOOL_ROUNDS:
         total_rounds += 1
+
+        # Auto-Compaction: shrink history before sending to the LLM if we're
+        # over threshold (design doc §9).
+        async def _summarizer(msgs: list[BaseMessage]) -> str:
+            resp = await provider.generate(messages=msgs, tools=None)
+            return resp.text
+
+        try:
+            compact_result = await maybe_compact(
+                messages,
+                model=getattr(provider, "model", "") or settings.GEMINI_MODEL,
+                tracking=compact_tracking,
+                summarizer=_summarizer,
+            )
+            if compact_result is not None:
+                messages = apply_compaction(list(messages), compact_result)
+        except Exception:
+            logger.exception("Auto-compaction failed; continuing without")
 
         # Render system prompt fresh each turn (dynamic tool list, time)
         system = SystemMessage(
@@ -187,7 +240,29 @@ async def stream_chat(
             })
 
             tool_start = time.monotonic()
-            result = await _execute_tool(tc.tool_name, tc.tool_args)
+            # Long-running tools (currently: run_target_discovery) push
+            # ``research_progress`` events through the progress queue.
+            # Run them in a background task so we can drain that queue
+            # and forward events to the SSE stream while the tool works.
+            tool_task = asyncio.create_task(
+                _execute_tool(tc.tool_name, tc.tool_args)
+            )
+            try:
+                while not tool_task.done():
+                    try:
+                        ev = await asyncio.wait_for(
+                            progress_queue.get(), timeout=0.5
+                        )
+                        yield _sse(ev)
+                    except asyncio.TimeoutError:
+                        continue
+                # Drain any final queued events.
+                while not progress_queue.empty():
+                    yield _sse(progress_queue.get_nowait())
+                result = tool_task.result()
+            except asyncio.CancelledError:
+                tool_task.cancel()
+                raise
             tool_ms = int((time.monotonic() - tool_start) * 1000)
 
             # Auto-mount tools surfaced by tool_search
@@ -200,6 +275,16 @@ async def stream_chat(
                     active_names = ["tool_search"] + [
                         t.name for t in default_registry.bind_active(hot_loaded=hot_loaded)
                     ] 
+                except Exception:
+                    pass
+
+            # Capture file_ids produced by tools (e.g. run_target_discovery).
+            if tc.tool_name == "run_target_discovery":
+                try:
+                    payload = json.loads(result)
+                    fid = payload.get("report_file_id")
+                    if fid:
+                        produced_file_ids.append(str(fid))
                 except Exception:
                     pass
 
@@ -261,6 +346,7 @@ async def stream_chat(
         "role": "assistant",
         "content": full_text,
         "ts": _now_iso(),
+        "file_ids": produced_file_ids,
     })
 
     # ----- 7. Save traces to S3 -----

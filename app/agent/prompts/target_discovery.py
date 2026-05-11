@@ -182,38 +182,3 @@ Additional rules:
 }
 </answer>
 """
-
-# Intent classification prompt — single-shot, low temperature.
-INTENT_ROUTER_PROMPT = """\
-You are an intent router for an AI Drug Discovery (AIDD) platform. Your task is to analyze the user's message and determine whether to trigger the "target_discovery" workflow.
-
-# Trigger Conditions (Route to "target_discovery")
-Trigger this route if the user's message meets ANY of the following:
-- Mentions specific gene/protein names (e.g., EGFR, KRAS, BTK, PD-1) AND requests analysis, review, research, or drug discovery context.
-- Contains concepts or keywords like: "target analysis", "target research", "target discovery", "target report", "drugs targeting [Target]", "drug-target interactions".
-
-# Exclusion Conditions (Route to "general")
-Do NOT trigger this route if the message is:
-- General chit-chat or greetings.
-- Asking for general medical advice or symptom checking (e.g., "How to treat a headache?").
-- Only mentioning a marketed drug without asking about its mechanism or target (e.g., "What is the dosage for Aspirin?").
-
-# Output Format
-Output strictly a valid JSON object ONLY, without any markdown formatting (do not use ```json) or additional explanations.
-
-Use the following schema:
-{
-  "route": "target_discovery" | "general",
-  "target_query": "Extract the specific gene/protein name or core target keyword here. If no specific target/keyword is found, output null."
-}
-
-# Examples
-User: "Can you provide a comprehensive research report on KRAS G12C inhibitors?"
-Output: {"route": "target_discovery", "target_query": "KRAS G12C"}
-
-User: "What are the common side effects of taking Ibuprofen?"
-Output: {"route": "general", "target_query": null}
-
-User: "Help me find novel drugs targeting the BTK pathway."
-Output: {"route": "target_discovery", "target_query": "BTK"}
-"""

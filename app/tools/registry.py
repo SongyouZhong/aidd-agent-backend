@@ -22,6 +22,7 @@ from app.tools.drug import (
     query_gtopdb,
     query_pubchem,
 )
+from app.tools.deep_research import run_target_discovery
 from app.tools.literature import query_arxiv, query_pubmed
 from app.tools.semantic_scholar import (
     query_semantic_scholar_citations,
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
 
 
 # Categorisation drives whether the tool is in the default System Prompt.
-CORE_TOOL_NAMES = {"query_pubmed", "query_arxiv"}
+CORE_TOOL_NAMES = {"query_pubmed", "query_arxiv", "run_target_discovery"}
 DEFERRED_TOOL_NAMES = {
     "query_semantic_scholar_search",
     "query_semantic_scholar_paper",
@@ -169,6 +170,16 @@ def _build_default_registry() -> ToolRegistry:
         query_arxiv,
         category="core",
         keywords=["arxiv", "preprint", "paper", "literature"],
+    )
+    # --- Deep research (Agent-as-a-Tool) -----------------------------
+    reg.register(
+        run_target_discovery,
+        category="core",
+        keywords=[
+            "target", "discovery", "deep research", "target discovery",
+            "靶点", "靶点发现", "靶点分析", "深度调研", "调研",
+            "protein analysis", "gene analysis",
+        ],
     )
     # --- Semantic Scholar --------------------------------------------
     reg.register(

@@ -4,6 +4,7 @@ Public re-exports keep ``app.tools.<name>`` ergonomics for callers and
 make ``ToolRegistry`` discovery deterministic.
 """
 
+from app.tools.deep_research import run_target_discovery
 from app.tools.literature import query_arxiv, query_pubmed
 from app.tools.database import query_chembl, query_uniprot
 from app.tools.disease import query_monarch, query_opentarget, query_quickgo
@@ -49,6 +50,7 @@ __all__ = [
     "query_pubchem",
     "query_gtopdb",
     "query_chembl_peptides",
+    "run_target_discovery",
     "tool_search",
     "ToolRegistry",
     "default_registry",

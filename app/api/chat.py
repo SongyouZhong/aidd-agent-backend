@@ -49,6 +49,7 @@ async def chat(
             user_id=str(user.id),
             plan_mode=payload.plan_mode,
             file_ids=[str(fid) for fid in payload.file_ids],
+            project_id=str(payload.project_id) if payload.project_id else None,
         ),
         media_type="text/event-stream",
         headers={
