@@ -93,6 +93,7 @@ class FakeLLMProvider:
         self,
         messages: list[BaseMessage],
         tools: list[Any] | None = None,
+        max_tokens: int | None = None,
     ) -> AIResponse:
         if not self._script:
             return AIResponse(text="<answer>(no scripted response)</answer>")
@@ -210,6 +211,7 @@ class GeminiProvider:
         self,
         messages: list[BaseMessage],
         tools: list[Any] | None = None,
+        max_tokens: int | None = None,
     ) -> AIResponse:
         system_text, contents = self._to_gemini_contents(messages)
         from google.genai import types  # type: ignore
@@ -217,6 +219,8 @@ class GeminiProvider:
         config_kwargs: dict[str, Any] = {}
         if system_text:
             config_kwargs["system_instruction"] = system_text
+        if max_tokens is not None:
+            config_kwargs["max_output_tokens"] = max_tokens
 
         # Build tool list: Google Search grounding and Function Calling
         # are MUTUALLY EXCLUSIVE in the Gemini API. When we have tools
@@ -420,6 +424,7 @@ class OpenAICompatibleProvider:
         self,
         messages: list[BaseMessage],
         tools: list[Any] | None = None,
+        max_tokens: int | None = None,
     ) -> AIResponse:
         oa_messages = self._to_openai_messages(messages)
         kwargs: dict[str, Any] = {
@@ -427,7 +432,7 @@ class OpenAICompatibleProvider:
             "messages": oa_messages,
             "temperature": 0.7,
             "top_p": 0.8,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens if max_tokens is not None else 4096,
         }
         extra = self._get_extra_body()
         if extra:
@@ -573,6 +578,34 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             return {"thinking": {"type": "enabled"}}
         return None
 
+    @staticmethod
+    def _to_openai_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
+        """Same as base, but for assistant turns split a leading
+        ``<thought>...</thought>`` block back into ``reasoning_content``.
+
+        DeepSeek's thinking mode requires the ``reasoning_content`` of any
+        prior assistant turn to be echoed back; otherwise the API returns
+        ``400 invalid_request_error``.
+        """
+        out = OpenAICompatibleProvider._to_openai_messages(messages)
+        for msg_dict in out:
+            if msg_dict.get("role") != "assistant":
+                continue
+            content = msg_dict.get("content")
+            if not isinstance(content, str):
+                continue
+            stripped = content.lstrip()
+            if not stripped.startswith("<thought>"):
+                continue
+            end = stripped.find("</thought>")
+            if end == -1:
+                continue
+            reasoning = stripped[len("<thought>"):end].strip()
+            rest = stripped[end + len("</thought>"):].lstrip("\n").lstrip()
+            msg_dict["reasoning_content"] = reasoning
+            msg_dict["content"] = rest or None
+        return out
+
 
 # --- Fallback wrapper (round-scoped circuit breaker) -------------------
 
@@ -597,6 +630,13 @@ class FallbackLLMProvider:
     @staticmethod
     def _is_retryable_failure(exc: BaseException) -> bool:
         """Return True for infrastructure failures worth failing over on."""
+        # OpenAI SDK connection errors (covers all APIConnectionError variants)
+        try:
+            from openai import APIConnectionError as _OAIConnErr
+            if isinstance(exc, _OAIConnErr):
+                return True
+        except ImportError:
+            pass
         # google-genai raises google.genai.errors.{ClientError,ServerError,APIError}
         status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
         if status in (429, 503):
@@ -607,7 +647,7 @@ class FallbackLLMProvider:
         if "503" in msg and ("UNAVAILABLE" in msg or "OVERLOAD" in msg):
             return True
         # Network-level transient errors
-        for marker in ("DEADLINE_EXCEEDED", "TIMEOUT", "CONNECTION RESET"):
+        for marker in ("DEADLINE_EXCEEDED", "TIMEOUT", "CONNECTION RESET", "CONNECTION ERROR"):
             if marker in msg:
                 return True
         return False
@@ -616,6 +656,7 @@ class FallbackLLMProvider:
         self,
         messages: list[BaseMessage],
         tools: list[Any] | None = None,
+        max_tokens: int | None = None,
     ) -> AIResponse:
         failed_models = get_failed_models()
         last_exc = None
@@ -625,7 +666,7 @@ class FallbackLLMProvider:
                 continue
 
             try:
-                return await provider.generate(messages, tools=tools)
+                return await provider.generate(messages, tools=tools, max_tokens=max_tokens)
             except Exception as exc:
                 if not self._is_retryable_failure(exc):
                     raise
@@ -641,7 +682,7 @@ class FallbackLLMProvider:
 
         # All primaries failed or none were available
         if self.secondary:
-            return await self.secondary.generate(messages, tools=tools)
+            return await self.secondary.generate(messages, tools=tools, max_tokens=max_tokens)
 
         if last_exc:
             raise last_exc
@@ -747,4 +788,53 @@ def get_default_provider() -> Any:
                      "<answer>当前为离线模式，未配置有效 LLM。</answer>"
             )
         ]
+    )
+
+
+def get_graph_rag_llm() -> Any:
+    """Return a *synchronous* LangChain ChatOpenAI for use with GraphCypherQAChain.
+
+    Follows the same ``LLM_PRIORITY`` resolution as ``get_default_provider()``,
+    but only considers OpenAI-compatible endpoints (DeepSeek / Qwen).
+    Gemini is skipped because GraphCypherQAChain requires an OpenAI-compatible
+    interface. Thinking mode is disabled — Cypher generation needs deterministic
+    structured output, not reasoning traces.
+    """
+    from langchain_openai import ChatOpenAI  # type: ignore
+
+    priority_list = [p.strip().lower() for p in settings.LLM_PRIORITY.split(",") if p.strip()]
+
+    for p_type in priority_list:
+        if p_type == "deepseek" and settings.DEEPSEEK_BASE_URL and settings.DEEPSEEK_API_KEY:
+            model = settings.DEEPSEEK_MODELS.split(",")[0].strip()
+            logger.info("GraphRAG LLM: DeepSeek %s at %s", model, settings.DEEPSEEK_BASE_URL)
+            return ChatOpenAI(
+                model=model,
+                base_url=settings.DEEPSEEK_BASE_URL,
+                api_key=settings.DEEPSEEK_API_KEY,
+                temperature=0.0,
+            )
+        if p_type == "qwen" and settings.QWEN_BASE_URL:
+            logger.info("GraphRAG LLM: Qwen %s at %s", settings.QWEN_MODEL, settings.QWEN_BASE_URL)
+            return ChatOpenAI(
+                model=settings.QWEN_MODEL,
+                base_url=settings.QWEN_BASE_URL,
+                api_key=settings.QWEN_API_KEY or "empty",
+                temperature=0.0,
+            )
+
+    # Fallback: Qwen if not already tried via priority
+    if settings.QWEN_BASE_URL:
+        logger.info("GraphRAG LLM: Qwen %s at %s (fallback)", settings.QWEN_MODEL, settings.QWEN_BASE_URL)
+        return ChatOpenAI(
+            model=settings.QWEN_MODEL,
+            base_url=settings.QWEN_BASE_URL,
+            api_key=settings.QWEN_API_KEY or "empty",
+            temperature=0.0,
+        )
+
+    raise RuntimeError(
+        "No OpenAI-compatible LLM configured for GraphRAG. "
+        "Set DEEPSEEK_BASE_URL+DEEPSEEK_API_KEY or QWEN_BASE_URL in .env, "
+        "and ensure the corresponding entry appears in LLM_PRIORITY."
     )

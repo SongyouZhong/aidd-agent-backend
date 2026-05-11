@@ -15,6 +15,7 @@ from typing import Any
 
 from langchain_core.tools import tool
 
+from app.core.config import settings
 from app.tools.base import query_rest_api
 from app.tools.preprocess import MAX_TOOL_TOKENS, guarded_tool
 from app.tools.schemas import Paper
@@ -47,6 +48,11 @@ def _format_papers(papers: list[Paper]) -> str:
 async def _pubmed_query_async(query: str, max_papers: int) -> list[Paper]:
     """Fetch PubMed papers via NCBI E-utilities (no pymed dependency)."""
     EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+    # With an API key the rate limit rises from 3 req/s to 10 req/s.
+    _ncbi_key = settings.NCBI_API_KEY
+    _key_param: dict[str, str] = {"api_key": _ncbi_key} if _ncbi_key else {}
+
     search_data = await query_rest_api(
         f"{EUTILS}/esearch.fcgi",
         params={
@@ -54,6 +60,7 @@ async def _pubmed_query_async(query: str, max_papers: int) -> list[Paper]:
             "term": query,
             "retmode": "json",
             "retmax": max_papers,
+            **_key_param,
         },
     )
     id_list: list[str] = (search_data.get("esearchresult") or {}).get("idlist") or []
@@ -65,6 +72,7 @@ async def _pubmed_query_async(query: str, max_papers: int) -> list[Paper]:
             "db": "pubmed",
             "id": ",".join(id_list),
             "retmode": "json",
+            **_key_param,
         },
     )
     result_map: dict = summary_data.get("result") or {}

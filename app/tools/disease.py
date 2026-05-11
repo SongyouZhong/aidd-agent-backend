@@ -223,16 +223,52 @@ async def query_quickgo(uniprot_id: str, aspect: str = "F", max_results: int = 3
         logger.exception("QuickGO query failed")
         return f"QuickGO query failed for {uid}: {exc}"
     rows = []
+    seen: set[tuple[str, str]] = set()
     for r in data.get("results", []) or []:
+        gid = r.get("goId")
+        ev = r.get("goEvidence") or ""
+        if not gid:
+            continue
+        key = (gid, ev)
+        if key in seen:
+            continue
+        seen.add(key)
         rows.append(
             {
-                "go_id": r.get("goId"),
+                "go_id": gid,
                 "go_name": r.get("goName"),
                 "aspect": r.get("goAspect"),
-                "evidence": r.get("goEvidence"),
+                "evidence": ev,
                 "qualifier": r.get("qualifier"),
             }
         )
+
+    # QuickGO's annotation endpoint frequently returns ``goName: null``.
+    # Enrich by bulk-fetching term labels from the ontology endpoint so the
+    # downstream LLM doesn't hallucinate GO term names from the IDs.
+    missing_ids = sorted({r["go_id"] for r in rows if not r["go_name"]})
+    if missing_ids:
+        # Cap the URL length: chunk into 50-id batches.
+        name_map: dict[str, str] = {}
+        for i in range(0, len(missing_ids), 50):
+            chunk = missing_ids[i : i + 50]
+            try:
+                term_data = await query_rest_api(
+                    f"{QUICKGO_BASE}/ontology/go/terms/{','.join(chunk)}",
+                    max_retries=2,
+                )
+            except Exception as exc:
+                logger.warning("QuickGO term-name enrichment failed: %s", exc)
+                continue
+            for t in (term_data or {}).get("results", []) or []:
+                tid = t.get("id")
+                tname = t.get("name")
+                if tid and tname:
+                    name_map[tid] = tname
+        for r in rows:
+            if not r["go_name"] and r["go_id"] in name_map:
+                r["go_name"] = name_map[r["go_id"]]
+
     return json.dumps(
         {"uniprot": uid, "annotations": rows, "count": len(rows)},
         ensure_ascii=False,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
 ALLOWED_MIME_TYPES: set[str] = {
     "application/pdf",
@@ -35,3 +35,10 @@ class FileResponse(BaseModel):
     description: str | None = None
     s3_key: str
     created_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def download_url(self) -> str:
+        """Construct the API download URL for this file."""
+        return f"/api/v1/sessions/{self.session_id}/files/{self.id}/download"
+

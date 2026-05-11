@@ -48,6 +48,8 @@ async def stream_chat(
     session_id: str,
     user_content: str,
     user_id: str,
+    plan_mode: bool = False,
+    file_ids: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Execute agent conversation and yield SSE events.
 
@@ -60,6 +62,11 @@ async def stream_chat(
     # ----- 1. Load history -----
     history = await load_messages(session_id)
 
+    # ----- 1.5 Load file context if file_ids provided -----
+    file_context = ""
+    if file_ids:
+        file_context = await _load_file_context(session_id, file_ids)
+
     # ----- 2. Save user message -----
     user_msg_id = str(uuid.uuid4())
     await append_message(session_id, {
@@ -67,12 +74,18 @@ async def stream_chat(
         "role": "user",
         "content": user_content,
         "ts": _now_iso(),
+        "file_ids": file_ids or [],
     })
 
     # ----- 3. Build provider & context -----
     provider = get_default_provider()
     messages: list[BaseMessage] = _history_to_langchain(history)
-    messages.append(HumanMessage(content=user_content))
+
+    # Inject file context into the user message if present
+    enriched_content = user_content
+    if file_context:
+        enriched_content = f"{user_content}\n\n--- 附件内容 ---\n{file_context}"
+    messages.append(HumanMessage(content=enriched_content))
 
     hot_loaded: set[str] = set()
     active_tools = default_registry.bind_active(hot_loaded=hot_loaded)
@@ -95,6 +108,7 @@ async def stream_chat(
             content=render_system_prompt(
                 active_tools=active_names,
                 hot_loaded=hot_loaded,
+                system_status="plan_mode" if plan_mode else "ready",
             )
         )
 
@@ -207,6 +221,19 @@ async def stream_chat(
         # Loop back to LLM with tool results
         round_text = ""
 
+    # ----- 4.5 Emit citation events -----
+    # Extract URLs/references from tool results for frontend citation rendering
+    citations = _extract_citations(full_text, trace_steps)
+    for i, cite in enumerate(citations):
+        yield _sse({
+            "event": "citation",
+            "data": {
+                "index": i + 1,
+                "url": cite.get("url", ""),
+                "title": cite.get("title", ""),
+            },
+        })
+
     # ----- 5. Send message_end -----
     yield _sse({
         "event": "message_end",
@@ -256,6 +283,57 @@ def _strip_system(messages: list[BaseMessage]) -> list[BaseMessage]:
     return [m for m in messages if not isinstance(m, SystemMessage)]
 
 
+def _extract_citations(
+    full_text: str, trace_steps: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Extract unique URLs from tool results and response text as citations.
+
+    Returns a list of dicts with 'url' and 'title' keys.
+    """
+    import re
+
+    url_pattern = re.compile(r"https?://[^\s\)\]\}\"'<>]+")
+    seen: set[str] = set()
+    citations: list[dict[str, str]] = []
+
+    # Scan tool result summaries for URLs (e.g., PubMed links)
+    for step in trace_steps:
+        summary = step.get("tool_result_summary", "") or ""
+        for url in url_pattern.findall(summary):
+            url = url.rstrip(".,;:")
+            if url not in seen:
+                seen.add(url)
+                # Derive a short title from the URL
+                title = _url_to_title(url)
+                citations.append({"url": url, "title": title})
+
+    # Also scan the full response text
+    for url in url_pattern.findall(full_text):
+        url = url.rstrip(".,;:")
+        if url not in seen:
+            seen.add(url)
+            citations.append({"url": url, "title": _url_to_title(url)})
+
+    return citations
+
+
+def _url_to_title(url: str) -> str:
+    """Best-effort short title from a URL."""
+    if "pubmed.ncbi.nlm.nih.gov" in url:
+        pmid = url.rstrip("/").split("/")[-1]
+        return f"PubMed: {pmid}"
+    if "doi.org/" in url:
+        doi = url.split("doi.org/", 1)[-1]
+        return f"DOI: {doi}"
+    if "uniprot.org/" in url:
+        uid = url.rstrip("/").split("/")[-1]
+        return f"UniProt: {uid}"
+    # Fallback: use domain
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc
+    return domain or url[:60]
+
+
 def _history_to_langchain(history: list[dict[str, Any]]) -> list[BaseMessage]:
     msgs: list[BaseMessage] = []
     for m in history:
@@ -280,3 +358,49 @@ async def _execute_tool(name: str, args: dict[str, Any]) -> str:
     else:
         result = impl.invoke(args)
     return str(result)
+
+
+async def _load_file_context(session_id: str, file_ids: list[str]) -> str:
+    """Load file contents from S3 for the given file IDs.
+
+    Returns a combined string of file contents suitable for injecting
+    into the user message as context.
+    """
+    from sqlalchemy import select
+    from app.db.engine import AsyncSessionLocal
+    from app.models.session_file import SessionFile
+
+    parts: list[str] = []
+
+    async with AsyncSessionLocal() as db:
+        for fid in file_ids:
+            try:
+                result = await db.execute(
+                    select(SessionFile).where(
+                        SessionFile.id == uuid.UUID(fid),
+                        SessionFile.session_id == uuid.UUID(session_id),
+                    )
+                )
+                record = result.scalar_one_or_none()
+                if record is None:
+                    parts.append(f"[File {fid}]: (file not found)")
+                    continue
+
+                raw = await s3_storage.get_object(record.s3_key)
+                if raw:
+                    try:
+                        text = raw.decode("utf-8")
+                        # Truncate very long files
+                        parts.append(f"[File: {record.original_filename}]:\n{text[:20000]}")
+                    except UnicodeDecodeError:
+                        parts.append(
+                            f"[File: {record.original_filename}]: "
+                            f"(binary file, {len(raw)} bytes, type: {record.mime_type})"
+                        )
+                else:
+                    parts.append(f"[File: {record.original_filename}]: (S3 object missing)")
+            except Exception:
+                logger.warning("Failed to load file context for %s", fid)
+                parts.append(f"[File {fid}]: (load error)")
+    return "\n\n".join(parts)
+

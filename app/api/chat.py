@@ -45,6 +45,8 @@ async def chat(
             session_id=str(payload.session_id),
             user_content=payload.content,
             user_id=str(user.id),
+            plan_mode=payload.plan_mode,
+            file_ids=[str(fid) for fid in payload.file_ids],
         ),
         media_type="text/event-stream",
         headers={

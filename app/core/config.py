@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     # --- Semantic Scholar ---
     SEMANTIC_SCHOLAR_API_KEY: str | None = None
 
+    # --- NCBI E-utilities ---
+    # Without a key: 3 req/s; with a key: 10 req/s.
+    # Apply at https://www.ncbi.nlm.nih.gov/account/
+    NCBI_API_KEY: str | None = None
+
     # --- LLM fallback (Gemini → local Qwen on 503/429) ---
     LLM_FALLBACK_ENABLED: bool = True
     LLM_CIRCUIT_BREAK_SECONDS: int = 300  # how long to skip primary after a failure

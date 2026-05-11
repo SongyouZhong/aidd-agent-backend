@@ -16,3 +16,7 @@ class TraceStepResponse(BaseModel):
     raw_data_uri: str | None = None
     latency_ms: int | None = None
     created_at: str | None = None
+
+    class Config:
+        extra = "ignore"  # Tolerate extra fields from stored JSONL
+

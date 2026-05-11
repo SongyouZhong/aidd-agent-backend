@@ -107,35 +107,61 @@ async def query_reactome(uniprot_id: str, species: str = "Homo sapiens") -> str:
 
     Args:
         uniprot_id: UniProt accession (e.g. ``P00533``).
-        species: Species filter (default ``Homo sapiens``).
+        species: Species filter for client-side post-filtering (default
+            ``Homo sapiens``). Note: the underlying Reactome ContentService
+            endpoint ``/data/mapping/UniProt/{acc}/pathways`` does NOT accept
+            a ``species`` query parameter — passing one returns 404. We fetch
+            unfiltered then filter in-process.
     """
     uid = uniprot_id.strip().upper()
     url = f"{REACTOME_CONTENT}/data/mapping/UniProt/{uid}/pathways"
-    params = {"species": species}
     try:
-        data = await query_rest_api(url, params=params, max_retries=1)
+        # Reactome's ContentService is intermittently flaky; allow more retries
+        # so a single 5xx burst doesn't blank out the pathway node.
+        # IMPORTANT: do NOT pass `species` as a query param — that endpoint
+        # rejects it with 404. We filter client-side below.
+        data = await query_rest_api(url, max_retries=4)
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code if exc.response is not None else 0
         if code < 500:
-            return f"Reactome: no pathways mapped to {uid} (HTTP {code}, accession may be invalid or unmapped)."
+            # 404 from this endpoint = "no Reactome mapping for this UniProt".
+            # Return a terminal message so the LLM does not retry.
+            return (
+                f"Reactome: no pathways mapped to {uid} (HTTP {code}). "
+                "This is a terminal result — do NOT call query_reactome again "
+                "for the same accession; treat as 'no Reactome data'."
+            )
         logger.warning("Reactome server error for %s: HTTP %d", uid, code)
-        return f"Reactome query failed for {uid}: HTTP {code}"
+        # Structured error so downstream LLM/synthesize can distinguish
+        # "transiently unavailable" from "no data exists".
+        return json.dumps(
+            {"source": "Reactome", "uniprot": uid, "error": f"HTTP {code}", "retryable": True},
+            ensure_ascii=False,
+        )
     except Exception as exc:
         logger.exception("Reactome query failed")
-        return f"Reactome query failed for {uid}: {exc}"
+        return json.dumps(
+            {"source": "Reactome", "uniprot": uid, "error": str(exc), "retryable": True},
+            ensure_ascii=False,
+        )
 
     if not isinstance(data, list):
         return f"No Reactome pathways found for {uid}."
+    species_norm = (species or "").strip().lower()
     rows = []
     for p in data:
+        sp_field = p.get("species")
+        sp_name = (
+            sp_field.get("displayName") if isinstance(sp_field, dict) else None
+        )
+        if species_norm and sp_name and sp_name.lower() != species_norm:
+            continue
         st_id = p.get("stId")
         rows.append(
             {
                 "stable_id": st_id,
                 "name": p.get("displayName"),
-                "species": (p.get("species") or {}).get("displayName")
-                if isinstance(p.get("species"), dict)
-                else None,
+                "species": sp_name,
                 "url": f"https://reactome.org/PathwayBrowser/#/{st_id}" if st_id else None,
             }
         )
