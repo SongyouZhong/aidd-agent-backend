@@ -46,6 +46,7 @@ from app.agent.prompts.target_discovery import (
     PATHWAY_NODE_PROMPT,
     SYNTHESIZE_PROMPT,
 )
+from app.core.config import settings
 from app.tools import default_registry
 
 logger = logging.getLogger(__name__)
@@ -69,9 +70,8 @@ LITERATURE_TOOLS = [
     "query_semantic_scholar_search",
     "query_semantic_scholar_paper",
     "query_semantic_scholar_citations",
-    # Supplementary sources (PubMed / arXiv — authoritative PMIDs / preprints)
+    # Supplementary source (PubMed — authoritative PMIDs)
     "query_pubmed",
-    "query_arxiv",
 ]
 COMPOSITION_TOOLS = [
     "query_uniprot",
@@ -649,7 +649,7 @@ def build_target_discovery_graph(provider: Any):
         text = ""
         try:
             resp = await asyncio.wait_for(
-                provider.generate(messages=synth_messages, tools=None, max_tokens=8192),
+                provider.generate(messages=synth_messages, tools=None, max_tokens=settings.SYNTHESIZE_MAX_OUTPUT_TOKENS),
                 timeout=300.0,
             )
             text = resp.text or ""
@@ -687,7 +687,7 @@ def build_target_discovery_graph(provider: Any):
             retry_messages.append(HumanMessage(content=retry_user))
             try:
                 retry_resp = await asyncio.wait_for(
-                    provider.generate(messages=retry_messages, tools=None, max_tokens=8192),
+                    provider.generate(messages=retry_messages, tools=None, max_tokens=settings.SYNTHESIZE_MAX_OUTPUT_TOKENS),
                     timeout=180.0,
                 )
                 retry_text = retry_resp.text or ""

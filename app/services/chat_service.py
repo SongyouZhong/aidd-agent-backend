@@ -145,9 +145,14 @@ async def stream_chat(
             return resp.text
 
         try:
+            _current_model = (
+                getattr(provider, "model", None)
+                or (provider.primaries[0].model if getattr(provider, "primaries", None) else None)
+                or settings.GEMINI_MODELS.split(",")[0].strip()
+            )
             compact_result = await maybe_compact(
                 messages,
-                model=getattr(provider, "model", "") or settings.GEMINI_MODEL,
+                model=_current_model,
                 tracking=compact_tracking,
                 summarizer=_summarizer,
             )
@@ -167,7 +172,7 @@ async def stream_chat(
 
         # Rebuild tools list (may have changed via hot-loading)
         active_tools = default_registry.bind_active(hot_loaded=hot_loaded)
-        tools_for_llm = active_tools  # LangChain StructuredTool list
+        tools_for_llm = [tool_search] + active_tools  # always expose tool_search schema
 
         llm_messages = [system, *_strip_system(messages)]
 

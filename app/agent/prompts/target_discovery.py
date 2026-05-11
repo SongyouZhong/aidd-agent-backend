@@ -8,7 +8,7 @@ from __future__ import annotations
 LITERATURE_NODE_PROMPT = """\
 You are the "Original Paper Retrieval" node of the Target Discovery Agent.
 Available tools: query_semantic_scholar_search, query_semantic_scholar_paper,
-query_semantic_scholar_citations, query_pubmed, query_arxiv.
+query_semantic_scholar_citations, query_pubmed.
 
 Task: Collect up to 20 high-quality papers published in the last 5 years (2022–2026)
 for the target **{{ target_query }}**. Each paper must have ≥15 citations.
@@ -25,10 +25,9 @@ Search strategy (follow this order):
    `query_semantic_scholar_paper` with its paperId to read the full abstract.
 3. **Forward citations** — if you need recent studies building on a landmark paper, call
    `query_semantic_scholar_citations` with its paperId.
-4. **PubMed / arXiv as supplement** — ONLY if Semantic Scholar returned fewer than 5
-   valid papers, call `query_pubmed` (prefer `<GENE_SYMBOL>[gene] AND (<keyword>)`) or
-   `query_arxiv` to fill the gap. Apply the same ≥15 citation standard mentally when
-   selecting from PubMed/arXiv results.
+4. **PubMed as supplement** — ONLY if Semantic Scholar returned fewer than 5
+   valid papers, call `query_pubmed` (prefer `<GENE_SYMBOL>[gene] AND (<keyword>)`) to
+   fill the gap. Apply the same ≥15 citation standard mentally when selecting results.
 
 Constraints:
 - Run AT MOST 4 tool calls in total. Do NOT re-query a paper you already saw.

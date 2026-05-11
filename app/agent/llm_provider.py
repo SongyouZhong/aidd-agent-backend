@@ -127,7 +127,7 @@ class GeminiProvider:
         enable_grounding: bool = True,
     ) -> None:
         self.api_key = api_key or settings.GEMINI_API_KEY
-        self.model = model or settings.GEMINI_MODEL
+        self.model = model or settings.GEMINI_MODELS.split(",")[0].strip()
         self.enable_grounding = enable_grounding
         if not self.api_key:
             raise RuntimeError("GEMINI_API_KEY not configured")

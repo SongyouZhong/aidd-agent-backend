@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     # --- Subagent ---
     SUBAGENT_MAX_TURNS: int = 12
 
+    # --- Synthesize node output budget ---
+    SYNTHESIZE_MAX_OUTPUT_TOKENS: int = 384_000
+
     # --- Derived URLs ---
     @property
     def database_url_async(self) -> str:

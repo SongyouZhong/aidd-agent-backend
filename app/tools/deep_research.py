@@ -35,10 +35,10 @@ from app.services.chat_context import (
 
 logger = logging.getLogger(__name__)
 
-# Global wall-clock cap. The sub-graph itself enforces per-node budgets
-# (composition 240s, others 180-200s) so this is a safety net for the
-# whole pipeline.
-DEEP_RESEARCH_TIMEOUT_SECONDS = 600.0
+# Global wall-clock cap. Must be >= sum of worst-case inner budgets:
+#   composition(240) + max(parallel nodes)(200) + synthesize(300) = 740s.
+# 600s used to silently cancel `synthesize` mid-LLM-call.
+DEEP_RESEARCH_TIMEOUT_SECONDS = 900.0
 
 
 def _build_summary(target_query: str, report: dict[str, Any]) -> dict[str, Any]:

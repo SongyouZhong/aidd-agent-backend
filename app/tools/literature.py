@@ -126,7 +126,10 @@ def _arxiv_to_paper(item: Any) -> Paper:
 def _arxiv_query_sync(query: str, max_papers: int) -> list[Paper]:
     import arxiv  # type: ignore
 
-    client = arxiv.Client()
+    # Fail fast on rate-limits: default arxiv.Client retries 3x with backoff,
+    # which can burn 30-60s per query and starve the literature node's 200s
+    # budget. We rely on PubMed + Semantic Scholar as primary sources.
+    client = arxiv.Client(page_size=max_papers, delay_seconds=1, num_retries=1)
     search = arxiv.Search(
         query=query, max_results=max_papers, sort_by=arxiv.SortCriterion.Relevance
     )
@@ -200,7 +203,12 @@ async def query_arxiv(query: str, year: str = None, max_papers: int = 50) -> str
         except Exception as _e:
             logger.warning("arXiv Redis cache read failed: %s", _e)
 
-        papers = await asyncio.to_thread(_arxiv_query_sync, final_query, max_papers)
+        # Hard wall-clock cap so a slow/429-throttled arXiv response cannot
+        # eat the whole literature node budget.
+        papers = await asyncio.wait_for(
+            asyncio.to_thread(_arxiv_query_sync, final_query, max_papers),
+            timeout=20.0,
+        )
 
         result_str = _format_papers(papers)
         try:
@@ -213,6 +221,9 @@ async def query_arxiv(query: str, year: str = None, max_papers: int = 50) -> str
         except Exception as _e:
             logger.warning("arXiv Redis cache write failed: %s", _e)
         return result_str
+    except asyncio.TimeoutError:
+        logger.warning("arXiv query timed out (20s); returning empty result")
+        return "arXiv query timed out (likely rate-limited). No results."
     except Exception as exc:
         logger.exception("arXiv query failed")
         return f"arXiv query failed: {exc}"
