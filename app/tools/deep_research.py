@@ -187,19 +187,15 @@ async def run_target_discovery(target_query: str) -> str:
                 ensure_ascii=False,
             )
 
-        # Persist as session file.
-        file_id: str | None = None
-        filename: str | None = None
+        # Persist as session files (Markdown + raw JSON pair).
         try:
-            record = await target_report_service.save_report_as_session_file(
+            saved = await target_report_service.save_report_as_session_file(
                 session_id=ctx.session_id,
                 user_id=ctx.user_id,
                 project_id=ctx.project_id,
                 target_query=target_query,
                 report=report,
             )
-            file_id = str(record.id)
-            filename = record.original_filename
         except Exception as exc:
             logger.exception("Failed to persist target report as session file")
             # Still return the summary to the LLM, but flag the failure.
@@ -210,8 +206,23 @@ async def run_target_discovery(target_query: str) -> str:
 
         summary = _build_summary(target_query, report)
         summary["status"] = "ok"
-        summary["report_file_id"] = file_id
-        summary["report_filename"] = filename
+        # Markdown is the primary user-facing artifact; JSON is the raw
+        # structured payload kept for programmatic re-use.
+        summary["report_md_file_id"] = str(saved.md_record.id)
+        summary["report_md_filename"] = saved.md_record.original_filename
+        summary["report_file_id"] = str(saved.json_record.id)
+        summary["report_filename"] = saved.json_record.original_filename
+        # Tell the orchestrator LLM exactly how to reply: ONE short Chinese
+        # sentence pointing the user to the side-panel report. The full
+        # report content already lives in the MD file the frontend will
+        # auto-open; re-emitting it inline only wastes tokens and breaks
+        # the UX of "report opens in a side viewer".
+        summary["assistant_reply_instruction"] = (
+            "靶点深度分析已完成，完整报告已生成为 Markdown 文档，已自动出现在右侧报告面板中。"
+            "请用一句简短中文告知用户报告已就绪，可点击右上角附件查看；"
+            "**严禁**在你的回复中复述报告正文（论文列表、表格、序列等），"
+            "也不要再次输出 JSON。仅一句话即可。"
+        )
         return json.dumps(summary, ensure_ascii=False)
     finally:
         deep_research_running.reset(token)

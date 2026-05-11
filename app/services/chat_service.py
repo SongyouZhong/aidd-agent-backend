@@ -284,14 +284,37 @@ async def stream_chat(
                     pass
 
             # Capture file_ids produced by tools (e.g. run_target_discovery).
+            # Emit a `file_created` SSE event for each so the frontend can
+            # show the report attachment chip and auto-open the side viewer.
             if tc.tool_name == "run_target_discovery":
                 try:
                     payload = json.loads(result)
-                    fid = payload.get("report_file_id")
-                    if fid:
+                    # New (post Phase 1): MD + JSON pair. The MD file is
+                    # the user-facing artifact; emit it first so the
+                    # frontend opens the formatted report by default.
+                    for kind, fid_key, name_key, mime in (
+                        ("report_md", "report_md_file_id", "report_md_filename", "text/markdown"),
+                        ("report_json", "report_file_id", "report_filename", "application/json"),
+                    ):
+                        fid = payload.get(fid_key)
+                        if not fid:
+                            continue
                         produced_file_ids.append(str(fid))
+                        yield _sse({
+                            "event": "file_created",
+                            "data": {
+                                "file_id": str(fid),
+                                "filename": payload.get(name_key) or "",
+                                "mime_type": mime,
+                                "kind": kind,
+                                "download_url": (
+                                    f"/api/v1/projects/{project_id}/sessions/"
+                                    f"{session_id}/files/{fid}/download"
+                                ),
+                            },
+                        })
                 except Exception:
-                    pass
+                    logger.exception("Failed to parse run_target_discovery result")
 
             result_summary = str(result)[:200] + ("..." if len(str(result)) > 200 else "")
 

@@ -11,6 +11,7 @@ ALLOWED_MIME_TYPES: set[str] = {
     "application/pdf",
     "text/csv",
     "text/plain",
+    "text/markdown",
     "application/json",
     "image/png",
     "image/jpeg",

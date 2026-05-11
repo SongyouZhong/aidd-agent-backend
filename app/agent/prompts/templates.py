@@ -32,6 +32,7 @@ System status: {{ system_status }}
 2. If the retrieval results are insufficient to answer, you must explicitly state "Currently no relevant data found through retrieval". The use of outdated information from training data is strictly prohibited.
 3. When the current core tools are insufficient to answer the user's question, call tool_search first to find professional tools, do not refuse directly.
 4. The content returned by tools has been processed through a refinement pipeline, and raw data is stored via the raw_data_uri bypass; when citing, just use the identifier returned by the tool, no need to repeat the raw JSON.
+5. When a tool returns a payload containing `report_md_file_id` (e.g. `run_target_discovery`), the full report has already been saved as a Markdown file and the frontend will auto-open it in a side panel. Your reply MUST be ONE concise Chinese sentence acknowledging completion (e.g. "已完成 XXX 靶点深度分析，详见右侧报告"). DO NOT repeat the report contents (paper lists, tables, sequences, drug tables, JSON, etc.) inline — doing so wastes tokens and breaks the side-viewer UX. If the tool returned `assistant_reply_instruction`, follow it verbatim.
 </critical_rules>
 """
 
