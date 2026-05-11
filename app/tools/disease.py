@@ -69,6 +69,7 @@ async def _opentargets_post(query: str, variables: dict) -> dict:
         method="POST",
         json_body={"query": query, "variables": variables},
         headers={"Content-Type": "application/json"},
+        use_cache=True,
     )
 
 

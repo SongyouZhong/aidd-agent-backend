@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     REDIS_DB: int = 0
     REDIS_PASSWORD: str | None = None
     API_CACHE_TTL_SECONDS: int = 7 * 24 * 3600  # 7 days
+    ARXIV_CACHE_TTL_SECONDS: int = 3 * 24 * 3600  # 3 days (content refreshes daily)
 
     # --- SeaweedFS / S3 ---
     S3_ENDPOINT_URL: str = "http://localhost:8333"

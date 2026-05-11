@@ -24,13 +24,20 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_USER_AGENT = "aidd-agent/0.1 (+https://example.com)"
 
 # ---------------------------------------------------------------------------
-# Process-level TTL cache for idempotent GET requests.
+# Redis TTL cache for idempotent REST requests.
 # Avoids redundant external API calls when multiple graph nodes query the
 # same URL within a short window (e.g. ChEMBL / UniProt in drugs / pathway).
+# GET + expect_json=True: cached automatically.
+# POST: opt-in via use_cache=True (caller must guarantee idempotency).
 # ---------------------------------------------------------------------------
-def _cache_key(url: str, params: dict[str, Any] | None) -> str:
+def _cache_key(
+    url: str,
+    params: dict[str, Any] | None,
+    json_body: dict[str, Any] | None = None,
+) -> str:
     params_str = json.dumps(params, sort_keys=True, default=str) if params else ""
-    raw = f"{url}:{params_str}"
+    body_str = json.dumps(json_body, sort_keys=True, default=str) if json_body else ""
+    raw = f"{url}:{params_str}:{body_str}"
     md5_hash = hashlib.md5(raw.encode()).hexdigest()  # nosec: not used for crypto
     return f"api_cache:{md5_hash}"
 
@@ -45,23 +52,37 @@ async def query_rest_api(
     timeout: float = DEFAULT_TIMEOUT,
     max_retries: int = 3,
     expect_json: bool = True,
+    use_cache: bool | None = None,
+    cache_ttl: int | None = None,
 ) -> Any:
     """Issue an HTTP request and return parsed JSON (or raw text).
 
     Retries with exponential back-off on 429 / 5xx / network errors.
     Raises the last exception on exhaustion.
 
-    GET requests with ``expect_json=True`` are cached in Redis to avoid
-    redundant external API calls and rate-limiting.
+    Caching behaviour:
+    - GET + expect_json=True: cached automatically (default behaviour).
+    - POST (or any method): pass ``use_cache=True`` to opt in when the
+      endpoint is idempotent (e.g. GraphQL queries, search POSTs).
+    - ``use_cache=False`` disables caching unconditionally.
+    - ``cache_ttl``: override TTL in seconds; defaults to
+      ``settings.API_CACHE_TTL_SECONDS``.
     """
     merged_headers = {"User-Agent": DEFAULT_USER_AGENT, "Accept": "application/json"}
     if headers:
         merged_headers.update(headers)
 
-    # --- Redis TTL cache (GET + JSON only) ---
+    # Determine whether to use the Redis cache for this request.
+    # Default: cache GET+JSON requests; all other methods require opt-in.
+    if use_cache is None:
+        _should_cache = method.upper() == "GET" and expect_json
+    else:
+        _should_cache = use_cache and expect_json
+
+    # --- Redis TTL cache ---
     cache_hit_key: str | None = None
-    if method.upper() == "GET" and expect_json:
-        cache_hit_key = _cache_key(url, params)
+    if _should_cache:
+        cache_hit_key = _cache_key(url, params, json_body)
         try:
             redis = await get_redis()
             cached_value = await redis.get(cache_hit_key)
@@ -89,14 +110,14 @@ async def query_rest_api(
                     )
                 resp.raise_for_status()
                 result = resp.json() if expect_json else resp.text
-                # Store successful GET responses in the Redis cache.
+                # Store successful responses in the Redis cache.
                 if cache_hit_key is not None:
                     try:
                         redis = await get_redis()
                         await redis.set(
                             cache_hit_key,
                             json.dumps(result, ensure_ascii=False),
-                            ex=settings.API_CACHE_TTL_SECONDS,
+                            ex=cache_ttl if cache_ttl is not None else settings.API_CACHE_TTL_SECONDS,
                         )
                     except Exception as e:
                         logger.warning("Redis cache write failed for %s: %s", url, e)

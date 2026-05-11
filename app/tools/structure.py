@@ -131,6 +131,7 @@ async def query_pdb_identifiers(uniprot_id: str, max_results: int = 25) -> str:
             method="POST",
             json_body=body,
             headers={"Content-Type": "application/json"},
+            use_cache=True,
         )
     except Exception as exc:
         logger.exception("PDB search failed")

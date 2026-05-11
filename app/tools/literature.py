@@ -10,12 +10,15 @@ Adapted from Biomni's literature module but with three differences:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from typing import Any
 
 from langchain_core.tools import tool
 
 from app.core.config import settings
+from app.storage.redis_client import get_redis
 from app.tools.base import query_rest_api
 from app.tools.preprocess import MAX_TOOL_TOKENS, guarded_tool
 from app.tools.schemas import Paper
@@ -185,8 +188,31 @@ async def query_arxiv(query: str, year: str = None, max_papers: int = 50) -> str
             final_query = f"({query}) AND {date_filter}"
 
     try:
+        # --- Redis cache (arXiv, 3-day TTL) ---
+        _arxiv_cache_key = "arxiv_cache:" + hashlib.md5(
+            f"{final_query}:{max_papers}".encode()
+        ).hexdigest()  # nosec: not used for crypto
+        try:
+            redis = await get_redis()
+            cached = await redis.get(_arxiv_cache_key)
+            if cached:
+                return json.loads(cached)
+        except Exception as _e:
+            logger.warning("arXiv Redis cache read failed: %s", _e)
+
         papers = await asyncio.to_thread(_arxiv_query_sync, final_query, max_papers)
+
+        result_str = _format_papers(papers)
+        try:
+            redis = await get_redis()
+            await redis.set(
+                _arxiv_cache_key,
+                json.dumps(result_str, ensure_ascii=False),
+                ex=settings.ARXIV_CACHE_TTL_SECONDS,
+            )
+        except Exception as _e:
+            logger.warning("arXiv Redis cache write failed: %s", _e)
+        return result_str
     except Exception as exc:
         logger.exception("arXiv query failed")
         return f"arXiv query failed: {exc}"
-    return _format_papers(papers)
