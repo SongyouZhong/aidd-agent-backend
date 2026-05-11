@@ -53,24 +53,28 @@ def _format_paper(p: dict[str, Any]) -> str:
 @tool
 @guarded_tool(max_tokens=MAX_TOOL_TOKENS)
 async def query_semantic_scholar_search(
-    query: str, 
-    year: str = None, 
-    sort_by_citations: bool = False, 
-    max_results: int = 5
+    query: str,
+    year: str = None,
+    sort_by_citations: bool = False,
+    max_results: int = 5,
+    min_citations: int = 0,
 ) -> str:
     """Search for biomedical literature using Semantic Scholar.
-    
+
     Args:
         query: Free-form search query, e.g. "TDP-43 Alzheimer's disease".
         year: Optional year filter, e.g. "2023-2025" or "2024".
         sort_by_citations: If True, fetches more results and sorts by citation count (descending).
         max_results: Maximum number of papers to return (1-20).
-        
+        min_citations: Minimum citation count threshold; papers below this value are excluded.
+            If fewer qualifying papers exist, the tool returns all that qualify.
+
     Returns a markdown summary with title, authors, year, citation count, URL, and abstract.
     """
     max_results = max(1, min(int(max_results), 20))
-    limit = 100 if sort_by_citations else max_results
-    
+    # Fetch a larger pool when filtering/sorting so we have enough candidates after pruning.
+    limit = 100 if (sort_by_citations or min_citations > 0) else max_results
+
     params: dict[str, Any] = {
         "query": query,
         "limit": limit,
@@ -78,7 +82,7 @@ async def query_semantic_scholar_search(
     }
     if year:
         params["year"] = str(year)
-        
+
     try:
         data = await query_rest_api(
             f"{SEMANTIC_SCHOLAR_API_URL}/paper/search",
@@ -88,18 +92,24 @@ async def query_semantic_scholar_search(
     except Exception as exc:
         logger.exception("Semantic Scholar search query failed")
         return f"Semantic Scholar search failed: {exc}"
-        
+
     papers = data.get("data") or []
     if not papers:
         return "No papers found matching the query."
-        
-    # Apply citation sorting locally if requested
+
+    # Filter by minimum citation count before sorting/truncating.
+    if min_citations > 0:
+        papers = [p for p in papers if int(p.get("citationCount") or 0) >= min_citations]
+        if not papers:
+            return f"No papers found with ≥{min_citations} citations matching the query."
+
+    # Apply citation sorting locally if requested.
     if sort_by_citations:
         papers.sort(key=lambda x: int(x.get("citationCount") or 0), reverse=True)
-        
-    # Take the top max_results
+
+    # Take the top max_results.
     papers = papers[:max_results]
-    
+
     return "\n".join([_format_paper(p) for p in papers])
 
 @tool

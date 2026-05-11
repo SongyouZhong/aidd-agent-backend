@@ -64,7 +64,15 @@ LOGS_DIR = pathlib.Path("logs/target_discovery")
 
 
 # Tool subsets per node — names must match registered tool names.
-LITERATURE_TOOLS = ["query_pubmed", "query_arxiv"]
+LITERATURE_TOOLS = [
+    # Primary sources (Semantic Scholar — broader coverage, citation-sortable)
+    "query_semantic_scholar_search",
+    "query_semantic_scholar_paper",
+    "query_semantic_scholar_citations",
+    # Supplementary sources (PubMed / arXiv — authoritative PMIDs / preprints)
+    "query_pubmed",
+    "query_arxiv",
+]
 COMPOSITION_TOOLS = [
     "query_uniprot",
     "query_pdb",

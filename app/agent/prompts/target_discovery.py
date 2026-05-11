@@ -7,19 +7,36 @@ from __future__ import annotations
 
 LITERATURE_NODE_PROMPT = """\
 You are the "Original Paper Retrieval" node of the Target Discovery Agent.
-You can only call the following tools: query_pubmed, query_arxiv.
+Available tools: query_semantic_scholar_search, query_semantic_scholar_paper,
+query_semantic_scholar_citations, query_pubmed, query_arxiv.
 
-Task: Find 3-5 representative original papers for the target **{{ target_query }}** (Priority: First report of the target / foundational literature on the target's relationship with disease / highly cited reviews).
+Task: Collect up to 20 high-quality papers published in the last 5 years (2022–2026)
+for the target **{{ target_query }}**. Each paper must have ≥15 citations.
+Priority: first discovery / foundational disease-association literature / highly-cited reviews.
 
-Search strategy:
-- If a verified gene_symbol is provided in the user message, prefer PubMed queries of the form
-  `<GENE_SYMBOL>[gene] AND (<keyword>)` rather than free-text target name searches —
-  this dramatically improves recall.
-- Run AT MOST 3 distinct PubMed/arXiv queries. Do NOT re-query a PMID you already saw to "verify" it.
-- ❗ EARLY STOP: As soon as you have ≥3 papers each with a PMID **or** DOI, immediately stop calling tools
-  and emit the <answer> JSON. Do not attempt to find a "more highly cited" review by additional searches.
+Search strategy (follow this order):
+1. **Semantic Scholar first (primary)** — call `query_semantic_scholar_search` with:
+   - `year="2022-2026"` (last 5 years)
+   - `sort_by_citations=True`
+   - `max_results=20`
+   - `min_citations=15`
+   This returns up to 20 papers filtered to ≥15 citations, sorted by citation count.
+2. **Drill into key papers** — if a highly-cited paper warrants deeper inspection, call
+   `query_semantic_scholar_paper` with its paperId to read the full abstract.
+3. **Forward citations** — if you need recent studies building on a landmark paper, call
+   `query_semantic_scholar_citations` with its paperId.
+4. **PubMed / arXiv as supplement** — ONLY if Semantic Scholar returned fewer than 5
+   valid papers, call `query_pubmed` (prefer `<GENE_SYMBOL>[gene] AND (<keyword>)`) or
+   `query_arxiv` to fill the gap. Apply the same ≥15 citation standard mentally when
+   selecting from PubMed/arXiv results.
 
-Requirements: Each result must include a PMID or DOI, and a complete URL.
+Constraints:
+- Run AT MOST 4 tool calls in total. Do NOT re-query a paper you already saw.
+- ❗ EARLY STOP: Once Semantic Scholar has returned results (even if fewer than 20),
+  proceed directly to emitting the <answer> JSON unless fewer than 5 papers were found.
+- ⚠ Semantic Scholar paperId is NOT a PMID/DOI. If a paper only has a paperId,
+  leave pmid/doi null and set url to the Semantic Scholar paper link.
+
 When finished, directly output the final <answer> JSON:
 {"papers": [{"title":..., "year":..., "pmid":..., "doi":..., "url":..., "summary":...}]}
 """
