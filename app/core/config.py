@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # CORS — comma-separated list of allowed origins.
-    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:61824,http://127.0.0.1:61824"
 
     # --- PostgreSQL ---
     POSTGRES_HOST: str = "localhost"

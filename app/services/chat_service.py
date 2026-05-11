@@ -32,7 +32,7 @@ from langchain_core.messages import (
 )
 
 from app.agent.llm_provider import StreamChunk, get_default_provider, reset_failed_models
-from app.agent.prompt_renderer import assistant_prefill, render_system_prompt
+from app.agent.prompt_renderer import render_system_prompt
 from app.core.config import settings
 from app.storage.manager import append_message, load_messages
 from app.storage.s3 import s3_storage, trace_key
@@ -120,12 +120,14 @@ async def stream_chat(
 
         # --- Stream LLM response token-by-token ---
         round_text = ""
+        round_thinking = ""
         tool_calls: list[StreamChunk] = []
         round_start = time.monotonic()
 
         try:
             async for chunk in provider.stream(llm_messages, tools=tools_for_llm):
                 if chunk.type == "thinking":
+                    round_thinking += chunk.content
                     yield _sse({"event": "thinking_delta", "data": {"delta": chunk.content}})
                 elif chunk.type == "text":
                     round_text += chunk.content
@@ -152,12 +154,20 @@ async def stream_chat(
         # If no tool calls, we're done
         if not tool_calls:
             # Append AI message to the message list
-            messages.append(AIMessage(content=round_text))
+            ai_content = (
+                f"<thought>\n{round_thinking}\n</thought>\n\n{round_text}"
+                if round_thinking else round_text
+            )
+            messages.append(AIMessage(content=ai_content))
             break
 
         # Append AI message with tool calls
+        ai_content = (
+            f"<thought>\n{round_thinking}\n</thought>\n\n{round_text}"
+            if round_thinking else round_text
+        )
         ai_msg = AIMessage(
-            content=round_text,
+            content=ai_content,
             tool_calls=[
                 {"id": tc.tool_call_id, "name": tc.tool_name, "args": tc.tool_args}
                 for tc in tool_calls
@@ -220,6 +230,7 @@ async def stream_chat(
 
         # Loop back to LLM with tool results
         round_text = ""
+        round_thinking = ""
 
     # ----- 4.5 Emit citation events -----
     # Extract URLs/references from tool results for frontend citation rendering
