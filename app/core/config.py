@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     LLM_FALLBACK_ENABLED: bool = True
     LLM_CIRCUIT_BREAK_SECONDS: int = 300  # how long to skip primary after a failure
 
+    # --- Remark Renderer (Markdown → PDF microservice) ---
+    REMARK_RENDERER_URL: str = "http://localhost:3100"
+
     # --- Auto-Compaction (design doc §9.2) ---
     DISABLE_AUTO_COMPACT: bool = False
     AUTOCOMPACT_THRESHOLD_PERCENT: float = 0.8

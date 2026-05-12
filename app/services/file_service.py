@@ -129,3 +129,11 @@ async def get_download_url(
 ) -> str:
     record = await get_file(db, file_id, user_id)
     return await s3_storage.presigned_get_url(record.s3_key, expires_in=600)
+
+
+async def get_file_content(
+    db: AsyncSession, file_id: uuid.UUID, user_id: uuid.UUID
+) -> bytes | None:
+    """Read raw file bytes from S3.  Returns None if the object is missing."""
+    record = await get_file(db, file_id, user_id)
+    return await s3_storage.get_object(record.s3_key)

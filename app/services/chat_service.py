@@ -358,7 +358,21 @@ async def stream_chat(
             },
         })
 
-    # ----- 5. Send message_end -----
+    # ----- 5. Auto-generate session title on first message -----
+    if not history:
+        try:
+            new_title = await _generate_session_title(
+                user_content, full_text, session_id, user_id, project_id
+            )
+            if new_title:
+                yield _sse({
+                    "event": "session_title_updated",
+                    "data": {"title": new_title},
+                })
+        except Exception:
+            logger.exception("Auto-title generation failed; session keeps default title")
+
+    # ----- 6. Send message_end -----
     yield _sse({
         "event": "message_end",
         "data": {
@@ -529,3 +543,61 @@ async def _load_file_context(session_id: str, file_ids: list[str]) -> str:
                 parts.append(f"[File {fid}]: (load error)")
     return "\n\n".join(parts)
 
+
+async def _generate_session_title(
+    user_content: str,
+    assistant_content: str,
+    session_id: str,
+    user_id: str,
+    project_id: str | None,
+) -> str | None:
+    """Generate a short session title using the local Qwen model.
+
+    Called once after the first message in a session.  Uses the local vLLM
+    instance so there is zero cloud-API cost.  Returns the new title string,
+    or None if generation fails or yields an empty result.
+    """
+    from app.agent.llm_provider import QwenProvider
+    from app.db.engine import AsyncSessionLocal
+    from app.services import session_service
+
+    # Truncate inputs to keep the prompt tiny.
+    user_snippet = user_content[:200]
+    ai_snippet = assistant_content[:200]
+
+    prompt = (
+        "请根据以下对话内容，生成一个不超过15个字的简短标题。"
+        "只输出标题本身，不要加引号、序号或任何额外内容。\n\n"
+        f"用户: {user_snippet}\n"
+        f"助手: {ai_snippet}"
+    )
+
+    try:
+        title_provider = QwenProvider()
+        resp = await title_provider.generate(
+            messages=[HumanMessage(content=prompt)],
+            tools=None,
+            max_tokens=30,
+        )
+        title = resp.text.strip().strip('"\'""''')
+        if not title or len(title) > 50:
+            return None
+    except Exception:
+        logger.warning("Local Qwen title generation failed", exc_info=True)
+        return None
+
+    # Persist to database.
+    try:
+        async with AsyncSessionLocal() as db:
+            await session_service.rename_session(
+                db,
+                uuid.UUID(session_id),
+                uuid.UUID(user_id),
+                title,
+                project_id=uuid.UUID(project_id) if project_id else None,
+            )
+        logger.info("Auto-titled session %s → %r", session_id, title)
+        return title
+    except Exception:
+        logger.warning("Failed to persist auto-generated title", exc_info=True)
+        return None
