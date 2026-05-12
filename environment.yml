@@ -32,9 +32,6 @@ dependencies:
   - langchain-core
   - google-genai
   - openai  # OpenAI-compatible client for local vLLM (Qwen fallback)
-  - pip:
-      - langchain-neo4j           # GraphRAG support
-      - langchain-openai          # For ChatOpenAI used in GraphQAChain
 
   # --- Data Pipeline ---
   - pydantic>=2.0
@@ -50,8 +47,12 @@ dependencies:
   - pytest
   - pytest-asyncio
 
-  # --- pip-only packages (not available on conda-forge) ---
+  # --- pip-only packages (consolidated into a single pip block) ---
   - pip
   - pip:
+      - langchain-neo4j           # GraphRAG support
+      - langchain-openai          # For ChatOpenAI used in GraphQAChain
+      - langchain-community       # For Neo4jGraph (langchain_community.graphs)
       - pymed
       - googlesearch-python
+      - python-dotenv
