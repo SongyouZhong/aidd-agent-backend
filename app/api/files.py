@@ -99,6 +99,22 @@ async def download_file(
     return RedirectResponse(url=url, status_code=302)
 
 
+@router.get("/{session_id}/files/{file_id}/presigned-url")
+async def get_presigned_url(
+    project_id: uuid.UUID,
+    session_id: uuid.UUID,
+    file_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the pre-signed S3 URL as JSON so the frontend can use it
+    for browser-based downloads / new-tab opens without needing to attach
+    an Authorization header to the final redirect (which plain <a href>
+    cannot do)."""
+    url = await file_service.get_download_url(db, file_id, user.id)
+    return {"url": url}
+
+
 @router.delete(
     "/{session_id}/files/{file_id}",
     status_code=204,
