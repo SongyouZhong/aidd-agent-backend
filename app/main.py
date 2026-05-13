@@ -19,13 +19,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth as auth_router
 from app.api import chat as chat_router
+from app.api import events as events_router
 from app.api import files as files_router
 from app.api import messages as messages_router
 from app.api import projects as projects_router
 from app.api import sessions as sessions_router
 from app.api import targets as targets_router
+from app.api import tasks as tasks_router
 from app.api import traces as traces_router
 from app.core.config import settings
+from app.services.background_runner import background_runner
+from app.services.task_registry import reap_stale_tasks
 from app.storage.redis_client import close_redis, get_redis
 from app.storage.s3 import s3_storage
 
@@ -35,9 +39,12 @@ async def lifespan(app: FastAPI):
     # Eagerly init singletons so failures surface at startup, not first request.
     await s3_storage.start()
     await get_redis()
+    # Mark any tasks that were in-flight when the process last died as failed.
+    await reap_stale_tasks()
     try:
         yield
     finally:
+        await background_runner.shutdown()
         await s3_storage.stop()
         await close_redis()
 
@@ -72,6 +79,8 @@ def create_app() -> FastAPI:
     app.include_router(files_router.router, prefix=settings.API_V1_PREFIX)
     app.include_router(targets_router.router, prefix=settings.API_V1_PREFIX)
     app.include_router(traces_router.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(tasks_router.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(events_router.router, prefix=settings.API_V1_PREFIX)
 
     return app
 

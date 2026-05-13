@@ -45,6 +45,7 @@ from app.services.chat_context import (
     current_chat_context,
     progress_callback,
 )
+from app.services import task_registry
 from app.storage.manager import append_message, load_messages
 from app.storage.s3 import s3_storage, trace_key
 from app.tools import default_registry, tool_search
@@ -129,276 +130,262 @@ async def stream_chat(
     assistant_msg_id = str(uuid.uuid4())
     trace_steps: list[dict[str, Any]] = []
 
-    yield _sse({"event": "message_start", "data": {"message_id": assistant_msg_id}})
-
     full_text = ""
     total_rounds = 0
 
-    # ----- 4. ReAct loop -----
-    while total_rounds < MAX_TOOL_ROUNDS:
-        total_rounds += 1
+    try:
+        yield _sse({"event": "message_start", "data": {"message_id": assistant_msg_id}})
 
-        # Auto-Compaction: shrink history before sending to the LLM if we're
-        # over threshold (design doc §9).
-        async def _summarizer(msgs: list[BaseMessage]) -> str:
-            resp = await provider.generate(messages=msgs, tools=None)
-            return resp.text
+        # ----- 4. ReAct loop -----
+        while total_rounds < MAX_TOOL_ROUNDS:
+            total_rounds += 1
 
-        try:
-            _current_model = (
-                getattr(provider, "model", None)
-                or (provider.primaries[0].model if getattr(provider, "primaries", None) else None)
-                or settings.GEMINI_MODELS.split(",")[0].strip()
+            # Auto-Compaction: shrink history before sending to the LLM if we're
+            # over threshold (design doc §9).
+            async def _summarizer(msgs: list[BaseMessage]) -> str:
+                resp = await provider.generate(messages=msgs, tools=None)
+                return resp.text
+
+            try:
+                _current_model = (
+                    getattr(provider, "model", None)
+                    or (provider.primaries[0].model if getattr(provider, "primaries", None) else None)
+                    or settings.GEMINI_MODELS.split(",")[0].strip()
+                )
+                compact_result = await maybe_compact(
+                    messages,
+                    model=_current_model,
+                    tracking=compact_tracking,
+                    summarizer=_summarizer,
+                )
+                if compact_result is not None:
+                    messages = apply_compaction(list(messages), compact_result)
+            except Exception:
+                logger.exception("Auto-compaction failed; continuing without")
+
+            # Render system prompt fresh each turn (dynamic tool list, time)
+            system = SystemMessage(
+                content=render_system_prompt(
+                    active_tools=active_names,
+                    hot_loaded=hot_loaded,
+                    system_status="plan_mode" if plan_mode else "ready",
+                )
             )
-            compact_result = await maybe_compact(
-                messages,
-                model=_current_model,
-                tracking=compact_tracking,
-                summarizer=_summarizer,
-            )
-            if compact_result is not None:
-                messages = apply_compaction(list(messages), compact_result)
-        except Exception:
-            logger.exception("Auto-compaction failed; continuing without")
 
-        # Render system prompt fresh each turn (dynamic tool list, time)
-        system = SystemMessage(
-            content=render_system_prompt(
-                active_tools=active_names,
-                hot_loaded=hot_loaded,
-                system_status="plan_mode" if plan_mode else "ready",
-            )
-        )
+            # Rebuild tools list (may have changed via hot-loading)
+            active_tools = default_registry.bind_active(hot_loaded=hot_loaded)
+            tools_for_llm = [tool_search] + active_tools  # always expose tool_search schema
 
-        # Rebuild tools list (may have changed via hot-loading)
-        active_tools = default_registry.bind_active(hot_loaded=hot_loaded)
-        tools_for_llm = [tool_search] + active_tools  # always expose tool_search schema
+            llm_messages = [system, *_strip_system(messages)]
 
-        llm_messages = [system, *_strip_system(messages)]
+            # --- Stream LLM response token-by-token ---
+            round_text = ""
+            round_thinking = ""
+            tool_calls: list[StreamChunk] = []
+            round_start = time.monotonic()
 
-        # --- Stream LLM response token-by-token ---
-        round_text = ""
-        round_thinking = ""
-        tool_calls: list[StreamChunk] = []
-        round_start = time.monotonic()
+            try:
+                async for chunk in provider.stream(llm_messages, tools=tools_for_llm):
+                    if chunk.type == "thinking":
+                        round_thinking += chunk.content
+                        yield _sse({"event": "thinking_delta", "data": {"delta": chunk.content}})
+                    elif chunk.type == "text":
+                        round_text += chunk.content
+                        full_text += chunk.content
+                        yield _sse({"event": "content_delta", "data": {"delta": chunk.content}})
 
-        try:
-            async for chunk in provider.stream(llm_messages, tools=tools_for_llm):
-                if chunk.type == "thinking":
-                    round_thinking += chunk.content
-                    yield _sse({"event": "thinking_delta", "data": {"delta": chunk.content}})
-                elif chunk.type == "text":
-                    round_text += chunk.content
-                    full_text += chunk.content
-                    yield _sse({"event": "content_delta", "data": {"delta": chunk.content}})
+                    elif chunk.type == "tool_call":
+                        tool_calls.append(chunk)
+            except Exception as exc:
+                logger.exception("LLM stream error")
+                yield _sse({"event": "error", "data": {"code": "llm_error", "message": str(exc)}})
+                break
 
-                elif chunk.type == "tool_call":
-                    tool_calls.append(chunk)
-        except Exception as exc:
-            logger.exception("LLM stream error")
-            yield _sse({"event": "error", "data": {"code": "llm_error", "message": str(exc)}})
-            break
+            round_ms = int((time.monotonic() - round_start) * 1000)
 
-        round_ms = int((time.monotonic() - round_start) * 1000)
+            # Record LLM trace step
+            trace_steps.append({
+                "step_number": len(trace_steps) + 1,
+                "step_type": "think",
+                "latency_ms": round_ms,
+                "created_at": _now_iso(),
+            })
 
-        # Record LLM trace step
-        trace_steps.append({
-            "step_number": len(trace_steps) + 1,
-            "step_type": "think",
-            "latency_ms": round_ms,
-            "created_at": _now_iso(),
-        })
+            # If no tool calls, we're done
+            if not tool_calls:
+                # Append AI message to the message list
+                ai_content = (
+                    f"<thought>\n{round_thinking}\n</thought>\n\n{round_text}"
+                    if round_thinking else round_text
+                )
+                messages.append(AIMessage(content=ai_content))
+                break
 
-        # If no tool calls, we're done
-        if not tool_calls:
-            # Append AI message to the message list
+            # Append AI message with tool calls
             ai_content = (
                 f"<thought>\n{round_thinking}\n</thought>\n\n{round_text}"
                 if round_thinking else round_text
             )
-            messages.append(AIMessage(content=ai_content))
-            break
-
-        # Append AI message with tool calls
-        ai_content = (
-            f"<thought>\n{round_thinking}\n</thought>\n\n{round_text}"
-            if round_thinking else round_text
-        )
-        ai_msg = AIMessage(
-            content=ai_content,
-            tool_calls=[
-                {"id": tc.tool_call_id, "name": tc.tool_name, "args": tc.tool_args}
-                for tc in tool_calls
-            ],
-        )
-        messages.append(ai_msg)
-
-        # --- Execute tools ---
-        for tc in tool_calls:
-            yield _sse({
-                "event": "tool_use_start",
-                "data": {
-                    "tool_name": tc.tool_name,
-                    "tool_call_id": tc.tool_call_id,
-                    "args": tc.tool_args,
-                },
-            })
-
-            tool_start = time.monotonic()
-            # Long-running tools (currently: run_target_discovery) push
-            # ``research_progress`` events through the progress queue.
-            # Run them in a background task so we can drain that queue
-            # and forward events to the SSE stream while the tool works.
-            tool_task = asyncio.create_task(
-                _execute_tool(tc.tool_name, tc.tool_args)
+            ai_msg = AIMessage(
+                content=ai_content,
+                tool_calls=[
+                    {"id": tc.tool_call_id, "name": tc.tool_name, "args": tc.tool_args}
+                    for tc in tool_calls
+                ],
             )
-            try:
-                while not tool_task.done():
-                    try:
-                        ev = await asyncio.wait_for(
-                            progress_queue.get(), timeout=0.5
-                        )
-                        yield _sse(ev)
-                    except asyncio.TimeoutError:
-                        continue
-                # Drain any final queued events.
-                while not progress_queue.empty():
-                    yield _sse(progress_queue.get_nowait())
-                result = tool_task.result()
-            except asyncio.CancelledError:
-                tool_task.cancel()
-                raise
-            tool_ms = int((time.monotonic() - tool_start) * 1000)
+            messages.append(ai_msg)
 
-            # Auto-mount tools surfaced by tool_search
-            if tc.tool_name == "tool_search":
-                try:
-                    payload = json.loads(result)
-                    for m in payload.get("matches", []):
-                        if m.get("name"):
-                            hot_loaded.add(m["name"])
-                    active_names = ["tool_search"] + [
-                        t.name for t in default_registry.bind_active(hot_loaded=hot_loaded)
-                    ] 
-                except Exception:
-                    pass
+            # --- Execute tools ---
+            for tc in tool_calls:
+                yield _sse({
+                    "event": "tool_use_start",
+                    "data": {
+                        "tool_name": tc.tool_name,
+                        "tool_call_id": tc.tool_call_id,
+                        "args": tc.tool_args,
+                    },
+                })
 
-            # Capture file_ids produced by tools (e.g. run_target_discovery).
-            # Emit a `file_created` SSE event for each so the frontend can
-            # show the report attachment chip and auto-open the side viewer.
-            if tc.tool_name == "run_target_discovery":
+                tool_start = time.monotonic()
+                # Long-running tools (currently: run_target_discovery) push
+                # ``research_progress`` events through the progress queue.
+                # Run them in a background task so we can drain that queue
+                # and forward events to the SSE stream while the tool works.
+                tool_task = asyncio.create_task(
+                    _execute_tool(tc.tool_name, tc.tool_args)
+                )
                 try:
-                    payload = json.loads(result)
-                    # New (post Phase 1): MD + JSON pair. The MD file is
-                    # the user-facing artifact; emit it first so the
-                    # frontend opens the formatted report by default.
-                    for kind, fid_key, name_key, mime in (
-                        ("report_md", "report_md_file_id", "report_md_filename", "text/markdown"),
-                        ("report_json", "report_file_id", "report_filename", "application/json"),
-                    ):
-                        fid = payload.get(fid_key)
-                        if not fid:
+                    last_heartbeat = time.monotonic()
+                    while not tool_task.done():
+                        try:
+                            ev = await asyncio.wait_for(
+                                progress_queue.get(), timeout=0.5
+                            )
+                            last_heartbeat = time.monotonic()
+                            yield _sse(ev)
+                        except asyncio.TimeoutError:
+                            now = time.monotonic()
+                            if now - last_heartbeat >= 15:
+                                # Keep long-running tool streams alive through
+                                # Cloudflare/HTTP2 while a graph node is working
+                                # and has not emitted a progress event yet.
+                                yield ": keep-alive\n\n"
+                                last_heartbeat = now
                             continue
-                        produced_file_ids.append(str(fid))
-                        yield _sse({
-                            "event": "file_created",
-                            "data": {
-                                "file_id": str(fid),
-                                "filename": payload.get(name_key) or "",
-                                "mime_type": mime,
-                                "kind": kind,
-                                "download_url": (
-                                    f"/api/v1/projects/{project_id}/sessions/"
-                                    f"{session_id}/files/{fid}/download"
-                                ),
-                            },
-                        })
-                except Exception:
-                    logger.exception("Failed to parse run_target_discovery result")
+                    # Drain any final queued events.
+                    while not progress_queue.empty():
+                        yield _sse(progress_queue.get_nowait())
+                    result = tool_task.result()
+                except asyncio.CancelledError:
+                    tool_task.cancel()
+                    raise
+                tool_ms = int((time.monotonic() - tool_start) * 1000)
 
-            result_summary = str(result)[:200] + ("..." if len(str(result)) > 200 else "")
+                # Auto-mount tools surfaced by tool_search
+                if tc.tool_name == "tool_search":
+                    try:
+                        payload = json.loads(result)
+                        for m in payload.get("matches", []):
+                            if m.get("name"):
+                                hot_loaded.add(m["name"])
+                        active_names = ["tool_search"] + [
+                            t.name for t in default_registry.bind_active(hot_loaded=hot_loaded)
+                        ] 
+                    except Exception:
+                        pass
 
+                # When run_target_discovery returns 'accepted', associate the
+                # tool_call_id with the background task so resume_after_task can
+                # later inject the correct ToolMessage into history.
+                if tc.tool_name == "run_target_discovery":
+                    try:
+                        payload = json.loads(result)
+                        if payload.get("status") == "accepted" and payload.get("task_id"):
+                            await task_registry.set_tool_call_id(
+                                payload["task_id"], tc.tool_call_id
+                            )
+                    except Exception:
+                        logger.exception("Failed to register tool_call_id for background task")
+
+                result_summary = str(result)[:200] + ("..." if len(str(result)) > 200 else "")
+
+                yield _sse({
+                    "event": "tool_use_end",
+                    "data": {
+                        "tool_call_id": tc.tool_call_id,
+                        "result_summary": result_summary,
+                    },
+                })
+
+                messages.append(
+                    ToolMessage(content=str(result), name=tc.tool_name, tool_call_id=tc.tool_call_id)
+                )
+
+                # Record tool trace step
+                trace_steps.append({
+                    "step_number": len(trace_steps) + 1,
+                    "step_type": "act",
+                    "tool_name": tc.tool_name,
+                    "tool_args": tc.tool_args,
+                    "tool_result_summary": result_summary,
+                    "latency_ms": tool_ms,
+                    "created_at": _now_iso(),
+                })
+
+            # Loop back to LLM with tool results
+            round_text = ""
+            round_thinking = ""
+
+        # ----- 4.5 Emit citation events -----
+        # Extract URLs/references from tool results for frontend citation rendering
+        citations = _extract_citations(full_text, trace_steps)
+        for i, cite in enumerate(citations):
             yield _sse({
-                "event": "tool_use_end",
+                "event": "citation",
                 "data": {
-                    "tool_call_id": tc.tool_call_id,
-                    "result_summary": result_summary,
+                    "index": i + 1,
+                    "url": cite.get("url", ""),
+                    "title": cite.get("title", ""),
                 },
             })
 
-            messages.append(
-                ToolMessage(content=str(result), name=tc.tool_name, tool_call_id=tc.tool_call_id)
-            )
+        # ----- 5. Auto-generate session title on first message -----
+        if not history:
+            try:
+                new_title = await _generate_session_title(
+                    user_content, full_text, session_id, user_id, project_id
+                )
+                if new_title:
+                    yield _sse({
+                        "event": "session_title_updated",
+                        "data": {"title": new_title},
+                    })
+            except Exception:
+                logger.exception("Auto-title generation failed; session keeps default title")
 
-            # Record tool trace step
-            trace_steps.append({
-                "step_number": len(trace_steps) + 1,
-                "step_type": "act",
-                "tool_name": tc.tool_name,
-                "tool_args": tc.tool_args,
-                "tool_result_summary": result_summary,
-                "latency_ms": tool_ms,
-                "created_at": _now_iso(),
-            })
-
-        # Loop back to LLM with tool results
-        round_text = ""
-        round_thinking = ""
-
-    # ----- 4.5 Emit citation events -----
-    # Extract URLs/references from tool results for frontend citation rendering
-    citations = _extract_citations(full_text, trace_steps)
-    for i, cite in enumerate(citations):
+        # ----- 6. Send message_end -----
         yield _sse({
-            "event": "citation",
+            "event": "message_end",
             "data": {
-                "index": i + 1,
-                "url": cite.get("url", ""),
-                "title": cite.get("title", ""),
+                "message_id": assistant_msg_id,
+                "usage": {"output_tokens": _estimate_tokens(full_text)},
             },
         })
-
-    # ----- 5. Auto-generate session title on first message -----
-    if not history:
+        yield "data: [DONE]\n\n"
+    finally:
+        # Phase 0: protect persistence from client disconnection.
+        # asyncio.shield keeps _finalize running even if this generator
+        # is cancelled (CancelledError thrown at a yield point).
         try:
-            new_title = await _generate_session_title(
-                user_content, full_text, session_id, user_id, project_id
+            await asyncio.shield(
+                _finalize(
+                    session_id, assistant_msg_id, full_text,
+                    produced_file_ids, trace_steps,
+                )
             )
-            if new_title:
-                yield _sse({
-                    "event": "session_title_updated",
-                    "data": {"title": new_title},
-                })
-        except Exception:
-            logger.exception("Auto-title generation failed; session keeps default title")
+        except asyncio.CancelledError:
+            pass
 
-    # ----- 6. Send message_end -----
-    yield _sse({
-        "event": "message_end",
-        "data": {
-            "message_id": assistant_msg_id,
-            "usage": {"output_tokens": _estimate_tokens(full_text)},
-        },
-    })
-    yield "data: [DONE]\n\n"
-
-    # ----- 6. Save assistant message -----
-    await append_message(session_id, {
-        "id": assistant_msg_id,
-        "role": "assistant",
-        "content": full_text,
-        "ts": _now_iso(),
-        "file_ids": produced_file_ids,
-    })
-
-    # ----- 7. Save traces to S3 -----
-    if trace_steps:
-        try:
-            key = trace_key(session_id, assistant_msg_id)
-            traces_data = "\n".join(json.dumps(t, ensure_ascii=False) for t in trace_steps)
-            await s3_storage.put_object(key, traces_data, content_type="application/x-ndjson")
-        except Exception:
-            logger.exception("Failed to save traces to S3")
 
 
 # ---------------------------------------------------------------------------
@@ -601,3 +588,95 @@ async def _generate_session_title(
     except Exception:
         logger.warning("Failed to persist auto-generated title", exc_info=True)
         return None
+
+
+async def _finalize(
+    session_id: str,
+    assistant_msg_id: str,
+    full_text: str,
+    produced_file_ids: list[str],
+    trace_steps: list[dict[str, Any]],
+) -> None:
+    """Persist the assistant message and trace to storage.
+
+    Called inside ``asyncio.shield`` from ``stream_chat``'s ``finally``
+    block so it completes even when the SSE stream is cancelled
+    (e.g. client refresh mid-stream).
+    """
+    await append_message(session_id, {
+        "id": assistant_msg_id,
+        "role": "assistant",
+        "content": full_text,
+        "ts": _now_iso(),
+        "file_ids": produced_file_ids,
+    })
+    if trace_steps:
+        try:
+            key = trace_key(session_id, assistant_msg_id)
+            traces_data = "\n".join(json.dumps(t, ensure_ascii=False) for t in trace_steps)
+            await s3_storage.put_object(key, traces_data, content_type="application/x-ndjson")
+        except Exception:
+            logger.exception("Failed to save traces to S3")
+
+
+async def resume_after_task(session_id: str, task_id: str) -> None:
+    """Generate and persist an assistant summary after a background task completes.
+
+    Called by the background task coroutine (not via any HTTP connection).
+    Loads persisted history, calls LLM for a brief completion notification,
+    persists the result, and broadcasts ``message_appended`` so connected
+    clients know to refresh the message list.
+    """
+    from app.agent.prompt_renderer import render_system_prompt
+
+    task = await task_registry.get(task_id)
+    if not task:
+        logger.warning("resume_after_task: task %s not found", task_id)
+        return
+
+    file_ids: list[str] = task.result.get("file_ids", []) if task.result else []
+
+    # Build a minimal prompt so the LLM can generate a short user-facing notice.
+    provider = get_default_provider()
+    history = await load_messages(session_id)
+    lc_msgs = _history_to_langchain(history)
+
+    system = SystemMessage(content=render_system_prompt(active_tools=[], hot_loaded=set()))
+    notify_prompt = HumanMessage(content=(
+        f"[Internal system notification: The background target discovery pipeline "
+        f"for '{task.target}' has just completed. "
+        f"The full Markdown report is saved as a session file. "
+        f"Please write a brief 1-2 sentence message for the user telling them "
+        f"the analysis is complete and the full report is ready in the side panel. "
+        f"Do not include any raw research data or long lists.]"
+    ))
+
+    llm_messages = [system, *_strip_system(lc_msgs), notify_prompt]
+
+    try:
+        resp = await provider.generate(llm_messages, tools=None)
+        summary = resp.text or (
+            f"The target discovery analysis for **{task.target}** is complete. "
+            f"The full report is now available in the side panel."
+        )
+    except Exception:
+        logger.exception("resume_after_task: LLM call failed; using fallback message")
+        summary = (
+            f"The target discovery analysis for **{task.target}** is complete. "
+            f"The full report is now available in the side panel."
+        )
+
+    msg_id = str(uuid.uuid4())
+    await append_message(session_id, {
+        "id": msg_id,
+        "role": "assistant",
+        "content": summary,
+        "ts": _now_iso(),
+        "file_ids": file_ids,
+    })
+
+    await task_registry.publish_event(session_id, {
+        "type": "message_appended",
+        "session_id": session_id,
+        "message_id": msg_id,
+    })
