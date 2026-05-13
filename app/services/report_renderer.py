@@ -14,6 +14,15 @@ from datetime import datetime
 from typing import Any
 
 
+def _as_dict(item: Any) -> dict[str, Any]:
+    """Return item if it is a dict, otherwise an empty dict.
+
+    Guards every list-of-dicts loop in the renderer against LLM outputs that
+    accidentally emit strings or other scalar types instead of objects.
+    """
+    return item if isinstance(item, dict) else {}
+
+
 def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     """Render a deep-research TargetReport dict into Markdown.
 
@@ -28,8 +37,9 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
       8. Notes / data-source gaps
     """
     out: list[str] = []
-    target = report.get("target") or {}
-    name = target.get("name") or target_query
+    target_raw = report.get("target")
+    target: dict[str, Any] = target_raw if isinstance(target_raw, dict) else {}
+    name = target.get("name") or (target_raw if isinstance(target_raw, str) else None) or target_query
     gene = target.get("gene_symbol") or "—"
     uniprot_ids = target.get("uniprot_ids") or []
     organism = target.get("organism") or "Homo sapiens"
@@ -65,7 +75,8 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
         out.append("")
         out.append("| 疾病 | 来源 | 关联评分 | 链接 |")
         out.append("|---|---|---:|---|")
-        for d in diseases:
+        for _d in diseases:
+            d = _as_dict(_d)
             dname = (d.get("disease_name") or "—").replace("|", "\\|")
             src = d.get("source") or "—"
             score = d.get("score")
@@ -82,7 +93,8 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
         out.append("")
         out.append("| 通路名称 | 来源 | 外部 ID | 关键互作 |")
         out.append("|---|---|---|---|")
-        for p in pathways:
+        for _p in pathways:
+            p = _as_dict(_p)
             pname = (p.get("name") or "—").replace("|", "\\|")
             src = p.get("source") or "—"
             ext_id = p.get("external_id") or "—"
@@ -107,21 +119,23 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
         out.append("")
         out.append("| ChEMBL ID | 名称 | 临床阶段 | 活性 (示例) |")
         out.append("|---|---|---|---|")
-        for d in sm:
+        for _d in sm:
+            d = _as_dict(_d)
             cid = d.get("molecule_chembl_id") or "—"
             pname = d.get("pref_name") or "—"
             phase = d.get("max_phase")
             phase_s = str(phase) if phase is not None else "—"
             acts = d.get("activities") or []
             if acts:
-                a = acts[0]
+                a = _as_dict(acts[0])
                 act_s = f"{a.get('type', '?')} = {a.get('value_nM', a.get('value_nm', '?'))} nM"
             else:
                 act_s = "—"
             out.append(f"| `{cid}` | {pname} | {phase_s} | {act_s} |")
         out.append("")
         # SMILES code block per drug (renderable as language="smiles")
-        for d in sm:
+        for _d in sm:
+            d = _as_dict(_d)
             smi = d.get("canonical_smiles")
             if smi:
                 cid = d.get("molecule_chembl_id") or ""
@@ -133,8 +147,9 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
                 out.append("```")
                 out.append("")
         # If everything was a stub note, surface it
-        if all(not d.get("canonical_smiles") and d.get("note") for d in sm):
-            for d in sm:
+        if all(not _as_dict(d).get("canonical_smiles") and _as_dict(d).get("note") for d in sm):
+            for _d in sm:
+                d = _as_dict(_d)
                 if d.get("note"):
                     out.append(f"> ℹ {d['note']}")
                     out.append("")
@@ -142,7 +157,8 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     if pep:
         out.append("### 4.2 多肽药物")
         out.append("")
-        for d in pep:
+        for _d in pep:
+            d = _as_dict(_d)
             note = d.get("note")
             if note:
                 out.append(f"> ℹ {note}")
@@ -162,7 +178,8 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     if ab:
         out.append("### 4.3 抗体药物")
         out.append("")
-        for d in ab:
+        for _d in ab:
+            d = _as_dict(_d)
             note = d.get("note")
             if note:
                 out.append(f"> ℹ {note}")
@@ -184,7 +201,8 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     if proteins:
         out.append("## 五、蛋白质结构组成")
         out.append("")
-        for p in proteins:
+        for _p in proteins:
+            p = _as_dict(_p)
             acc = p.get("accession") or "—"
             pname = p.get("name") or acc
             pgene = p.get("gene") or "—"
@@ -206,7 +224,8 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
                 out.append(f"- **代表 PDB 结构**: {pdb_links}{more}")
             if domains:
                 out.append("- **InterPro 结构域**:")
-                for dom in domains:
+                for _dom in domains:
+                    dom = _as_dict(_dom)
                     did = dom.get("interpro_id") or "—"
                     dname = dom.get("name") or "—"
                     dtype = dom.get("type") or ""
@@ -230,7 +249,8 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     if papers:
         out.append("## 六、关键文献")
         out.append("")
-        for i, p in enumerate(papers, 1):
+        for i, _p in enumerate(papers, 1):
+            p = _as_dict(_p)
             title = (p.get("title") or "—").strip()
             year = p.get("year")
             year_s = f" ({year})" if year else ""
@@ -259,7 +279,8 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     if gaps:
         out.append("## 七、数据源缺口")
         out.append("")
-        for g in gaps:
+        for _g in gaps:
+            g = _as_dict(_g)
             cat = g.get("category") or "—"
             reason = g.get("reason") or "—"
             out.append(f"- **{cat}**: {reason}")

@@ -739,16 +739,15 @@ def build_target_discovery_graph(provider: Any):
         existing_notes.extend(state.get("notes") or [])
         existing_notes.extend(synth_notes)
         report["notes"] = existing_notes
-        # Ensure target field is at minimum set.
-        report.setdefault(
-            "target",
-            {
-                "name": state["target_query"],
+        # Ensure target field is always a dict (LLM sometimes emits a plain string).
+        target_raw = report.get("target")
+        if not isinstance(target_raw, dict):
+            report["target"] = {
+                "name": target_raw if isinstance(target_raw, str) else state["target_query"],
                 "gene_symbol": None,
                 "uniprot_ids": [],
                 "organism": "Homo sapiens",
-            },
-        )
+            }
         # Write final consolidated report + synthesize node log.
         run_log_dir_str = (state.get("sub_results") or {}).get("_run_log_dir")
         if run_log_dir_str:
