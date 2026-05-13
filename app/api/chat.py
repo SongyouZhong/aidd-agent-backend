@@ -53,8 +53,10 @@ async def chat(
         ),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "Cache-Control": "no-cache, no-transform",
+            # NOTE: Do NOT set "Connection" header here.
+            # It is an HTTP/1.1 hop-by-hop header and is FORBIDDEN in HTTP/2
+            # (RFC 7540 §8.1.2.2). Cloudflare will abort the stream if present.
             "X-Accel-Buffering": "no",  # Disable Nginx buffering
         },
     )
