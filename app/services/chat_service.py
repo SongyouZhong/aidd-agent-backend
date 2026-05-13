@@ -641,6 +641,18 @@ async def resume_after_task(session_id: str, task_id: str) -> None:
     history = await load_messages(session_id)
     lc_msgs = _history_to_langchain(history)
 
+    # Detect the language of the user's last message so the completion notice
+    # matches it (avoids defaulting to Chinese when user wrote in English).
+    last_user_lang = "English"
+    for msg in reversed(history):
+        if msg.get("role") == "user":
+            text = msg.get("content", "")
+            # Heuristic: if >30% of characters are CJK, treat as Chinese.
+            cjk_count = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+            if text and cjk_count / len(text) > 0.3:
+                last_user_lang = "Chinese"
+            break
+
     system = SystemMessage(content=render_system_prompt(active_tools=[], hot_loaded=set()))
     notify_prompt = HumanMessage(content=(
         f"[Internal system notification: The background target discovery pipeline "
@@ -648,7 +660,8 @@ async def resume_after_task(session_id: str, task_id: str) -> None:
         f"The full Markdown report is saved as a session file. "
         f"Please write a brief 1-2 sentence message for the user telling them "
         f"the analysis is complete and the full report is ready in the side panel. "
-        f"Do not include any raw research data or long lists.]"
+        f"Do not include any raw research data or long lists. "
+        f"Write the message in {last_user_lang} to match the user's language.]"
     ))
 
     llm_messages = [system, *_strip_system(lc_msgs), notify_prompt]
