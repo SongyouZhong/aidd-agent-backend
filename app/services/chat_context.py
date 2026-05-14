@@ -22,6 +22,7 @@ class ChatRequestContext:
     session_id: str
     user_id: str
     project_id: Optional[str] = None
+    language: str = "English"
 
 
 # Per-request context (set in chat_service.stream_chat entry).

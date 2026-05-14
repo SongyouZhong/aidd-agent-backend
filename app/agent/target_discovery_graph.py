@@ -92,6 +92,7 @@ DRUGS_TOOLS = [
 
 class TargetDiscoveryState(TypedDict, total=False):
     target_query: str
+    language: str
     messages: Annotated[list[BaseMessage], add_messages]
     sub_results: Annotated[dict[str, Any], lambda a, b: {**(a or {}), **(b or {})}]
     notes: Annotated[list[str], lambda a, b: list(a or []) + list(b or [])]
@@ -396,9 +397,10 @@ async def _safe_node(
     prior_context: str | None = None,
     log_dir: pathlib.Path | None = None,
     timeout_seconds: float = NODE_TIMEOUT_SECONDS,
+    language: str = "English",
 ) -> tuple[dict[str, Any], list[str]]:
     """Run one node, catch exceptions and timeouts, return (result, notes)."""
-    sys_prompt = _render(template, target_query=target_query)
+    sys_prompt = _render(template, target_query=target_query, language=language)
     user_prompt = f"Start executing node [{name}], target: {target_query}."
     if prior_context:
         user_prompt += (
@@ -568,6 +570,7 @@ def build_target_discovery_graph(provider: Any):
             tool_names=COMPOSITION_TOOLS,
             log_dir=run_log_dir,
             timeout_seconds=COMPOSITION_TIMEOUT_SECONDS,
+            language=state.get("language", "English"),
         )
         return {
             "sub_results": {"composition": result, "_run_log_dir": str(run_log_dir)},
@@ -586,6 +589,7 @@ def build_target_discovery_graph(provider: Any):
             # rather than free-text "TDP-43 highly cited review".
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
             log_dir=run_log_dir,
+            language=state.get("language", "English"),
         )
         return {"sub_results": {"literature": result}, "notes": notes}
 
@@ -599,6 +603,7 @@ def build_target_discovery_graph(provider: Any):
             tool_names=FUNCTION_TOOLS,
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
             log_dir=run_log_dir,
+            language=state.get("language", "English"),
         )
         return {"sub_results": {"function": result}, "notes": notes}
 
@@ -613,6 +618,7 @@ def build_target_discovery_graph(provider: Any):
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
             log_dir=run_log_dir,
             timeout_seconds=180.0,
+            language=state.get("language", "English"),
         )
         return {"sub_results": {"pathway": result}, "notes": notes}
 
@@ -627,6 +633,7 @@ def build_target_discovery_graph(provider: Any):
             prior_context=_resolved_accession_context(state.get("sub_results") or {}),
             log_dir=run_log_dir,
             timeout_seconds=180.0,
+            language=state.get("language", "English"),
         )
         return {"sub_results": {"drugs": result}, "notes": notes}
 

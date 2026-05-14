@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -73,11 +74,15 @@ async def stream_chat(
     reset_failed_models()
 
     # ----- 0.5 Set per-request context for tools (e.g. run_target_discovery) -----
+    # Detect user language: if >30% of characters are CJK, treat as Chinese.
+    _cjk_count = sum(1 for c in user_content if "\u4e00" <= c <= "\u9fff")
+    _detected_lang = "Chinese" if user_content and _cjk_count / len(user_content) > 0.3 else "English"
     current_chat_context.set(
         ChatRequestContext(
             session_id=session_id,
             user_id=user_id,
             project_id=project_id,
+            language=_detected_lang,
         )
     )
     # Bridge between background tools and the SSE generator.
@@ -120,7 +125,8 @@ async def stream_chat(
     # Inject file context into the user message if present
     enriched_content = user_content
     if file_context:
-        enriched_content = f"{user_content}\n\n--- 附件内容 ---\n{file_context}"
+        _attach_label = "附件内容" if _detected_lang == "Chinese" else "Attached file contents"
+        enriched_content = f"{user_content}\n\n--- {_attach_label} ---\n{file_context}"
     messages.append(HumanMessage(content=enriched_content))
 
     hot_loaded: set[str] = set()
@@ -397,6 +403,17 @@ def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _strip_thought_tags(text: str) -> str:
+    """Remove <thought>...</thought> blocks from LLM output before persisting.
+
+    Some models (e.g. DeepSeek in non-streaming generate()) embed their chain-
+    of-thought inside <thought>...</thought> tags in the text field rather than
+    returning it as a separate reasoning chunk. Those blocks must not be shown
+    to users or stored in message history.
+    """
+    return re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL).strip()
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -585,7 +602,7 @@ async def _finalize(
     await append_message(session_id, {
         "id": assistant_msg_id,
         "role": "assistant",
-        "content": full_text,
+        "content": _strip_thought_tags(full_text),
         "ts": _now_iso(),
         "file_ids": produced_file_ids,
     })
@@ -620,18 +637,6 @@ async def resume_after_task(session_id: str, task_id: str) -> None:
     history = await load_messages(session_id)
     lc_msgs = _history_to_langchain(history)
 
-    # Detect the language of the user's last message so the completion notice
-    # matches it (avoids defaulting to Chinese when user wrote in English).
-    last_user_lang = "English"
-    for msg in reversed(history):
-        if msg.get("role") == "user":
-            text = msg.get("content", "")
-            # Heuristic: if >30% of characters are CJK, treat as Chinese.
-            cjk_count = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-            if text and cjk_count / len(text) > 0.3:
-                last_user_lang = "Chinese"
-            break
-
     system = SystemMessage(content=render_system_prompt(active_tools=[], hot_loaded=set()))
     notify_prompt = HumanMessage(content=(
         f"[Internal system notification: The background target discovery pipeline "
@@ -640,7 +645,7 @@ async def resume_after_task(session_id: str, task_id: str) -> None:
         f"Please write a brief 1-2 sentence message for the user telling them "
         f"the analysis is complete and the full report is ready in the side panel. "
         f"Do not include any raw research data or long lists. "
-        f"Write the message in {last_user_lang} to match the user's language.]"
+        f"Write the message in English.]"
     ))
 
     llm_messages = [system, *_strip_system(lc_msgs), notify_prompt]
@@ -662,7 +667,7 @@ async def resume_after_task(session_id: str, task_id: str) -> None:
     await append_message(session_id, {
         "id": msg_id,
         "role": "assistant",
-        "content": summary,
+        "content": _strip_thought_tags(summary),
         "ts": _now_iso(),
         "file_ids": file_ids,
     })

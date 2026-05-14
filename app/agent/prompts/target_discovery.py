@@ -14,6 +14,8 @@ Task: Collect up to 20 high-quality papers published in the last 5 years (2022�
 for the target **{{ target_query }}**. Each paper must have ≥15 citations.
 Priority: first discovery / foundational disease-association literature / highly-cited reviews.
 
+**Language**: Write ALL paper `summary` fields in **{{ language }}**.
+
 Search strategy (follow this order):
 1. **Semantic Scholar first (primary)** — call `query_semantic_scholar_search` with:
    - `year="2022-2026"` (last 5 years)
@@ -69,6 +71,8 @@ Available tools: query_opentarget, query_monarch, query_quickgo.
 Task: Explain the role of the target **{{ target_query }}** in physiology/pathology, especially how it affects
 the disease of interest. Every assertion must have a data source (OpenTargets score / Monarch entity /
 GO id).
+
+**Language**: Write ALL narrative text (especially `function_narrative`) in **{{ language }}**.
 
 Execution guidance:
 - Run query_opentarget once and query_quickgo at most twice (P + C aspects); query_monarch only if

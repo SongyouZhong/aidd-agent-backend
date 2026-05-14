@@ -46,6 +46,7 @@ async def save_report_as_session_file(
     project_id: str | None,
     target_query: str,
     report: dict[str, Any],
+    language: str = "English",
 ) -> SavedReportFiles:
     """Persist the report as TWO session files (JSON + MD). Returns both.
 
@@ -59,7 +60,7 @@ async def save_report_as_session_file(
     slug = _safe_slug(target_query)
     json_payload = json.dumps(report, ensure_ascii=False, indent=2, default=str).encode("utf-8")
     try:
-        md_payload = render_target_report_md(report, target_query).encode("utf-8")
+        md_payload = render_target_report_md(report, target_query, language=language).encode("utf-8")
     except Exception as exc:
         # Renderer failure shouldn't block JSON persistence — fall back
         # to a minimal MD stub so the user can still see something.

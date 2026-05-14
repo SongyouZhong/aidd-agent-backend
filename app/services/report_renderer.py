@@ -13,6 +13,65 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+# Bilingual label lookup. Add new labels here to support additional
+# sections without scattering string literals across the renderer.
+_LABELS: dict[str, dict[str, str]] = {
+    "English": {
+        "report_title":         "Target Deep Analysis Report",
+        "gene_symbol":          "Gene Symbol",
+        "organism":             "Organism",
+        "generated":            "Generated",
+        "sec_function":         "## 1. Biological Function & Disease Mechanism",
+        "sec_disease":          "## 2. Disease Associations",
+        "disease_col":          "| Disease | Source | Score | Link |",
+        "disease_link":         "View",
+        "sec_pathway":          "## 3. Signaling Pathways",
+        "pathway_col":          "| Pathway | Source | External ID | Key Interactors |",
+        "sec_drugs":            "## 4. Targeted Drugs",
+        "sec_drug_sm":          "### 4.1 Small Molecule Drugs",
+        "drug_sm_col":          "| ChEMBL ID | Name | Clinical Phase | Activity (example) |",
+        "sec_drug_pep":         "### 4.2 Peptide Drugs",
+        "sec_drug_ab":          "### 4.3 Antibody Drugs",
+        "sec_protein":          "## 5. Protein Structural Composition",
+        "protein_gene":         "Gene",
+        "protein_length":       "Sequence Length",
+        "protein_pdb":          "Representative PDB",
+        "protein_pdb_more":     "total: {n}",
+        "protein_domains":      "InterPro Domains",
+        "protein_seq":          "Amino Acid Sequence",
+        "sec_literature":       "## 6. Key Literature",
+        "sec_gaps":             "## 7. Data Source Gaps",
+        "sec_notes":            "## 8. Pipeline Notes",
+    },
+    "Chinese": {
+        "report_title":         "靶点深度分析报告",
+        "gene_symbol":          "基因符号",
+        "organism":             "物种",
+        "generated":            "生成时间",
+        "sec_function":         "## 一、生物学功能与疾病机制",
+        "sec_disease":          "## 二、疾病关联",
+        "disease_col":          "| 疾病 | 来源 | 关联评分 | 链接 |",
+        "disease_link":         "查看",
+        "sec_pathway":          "## 三、信号通路",
+        "pathway_col":          "| 通路名称 | 来源 | 外部 ID | 关键互作 |",
+        "sec_drugs":            "## 四、靶向药物",
+        "sec_drug_sm":          "### 4.1 小分子药物",
+        "drug_sm_col":          "| ChEMBL ID | 名称 | 临床阶段 | 活性 (示例) |",
+        "sec_drug_pep":         "### 4.2 多肽药物",
+        "sec_drug_ab":          "### 4.3 抗体药物",
+        "sec_protein":          "## 五、蛋白质结构组成",
+        "protein_gene":         "基因",
+        "protein_length":       "序列长度",
+        "protein_pdb":          "代表 PDB 结构",
+        "protein_pdb_more":     "共 {n} 个",
+        "protein_domains":      "InterPro 结构域",
+        "protein_seq":          "氨基酸序列",
+        "sec_literature":       "## 六、关键文献",
+        "sec_gaps":             "## 七、数据源缺口",
+        "sec_notes":            "## 八、流水线备注",
+    },
+}
+
 
 def _as_dict(item: Any) -> dict[str, Any]:
     """Return item if it is a dict, otherwise an empty dict.
@@ -23,7 +82,7 @@ def _as_dict(item: Any) -> dict[str, Any]:
     return item if isinstance(item, dict) else {}
 
 
-def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
+def render_target_report_md(report: dict[str, Any], target_query: str, language: str = "English") -> str:
     """Render a deep-research TargetReport dict into Markdown.
 
     Sections:
@@ -37,6 +96,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
       8. Notes / data-source gaps
     """
     out: list[str] = []
+    lbl = _LABELS.get(language, _LABELS["English"])
     target_raw = report.get("target")
     target: dict[str, Any] = target_raw if isinstance(target_raw, dict) else {}
     name = target.get("name") or (target_raw if isinstance(target_raw, str) else None) or target_query
@@ -46,15 +106,15 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     description = (target.get("description") or "").strip()
 
     # 1) Header --------------------------------------------------------
-    out.append(f"# 🧬 {name} 靶点深度分析报告")
+    out.append(f"# 🧬 {name} {lbl['report_title']}")
     out.append("")
     out.append(
-        f"> **基因符号**: `{gene}` &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"**物种**: {organism} &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"> **{lbl['gene_symbol']}**: `{gene}` &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"**{lbl['organism']}**: {organism} &nbsp;&nbsp;|&nbsp;&nbsp; "
         f"**UniProt**: {', '.join(f'`{u}`' for u in uniprot_ids) or '—'}"
     )
     out.append("")
-    out.append(f"*生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}*")
+    out.append(f"*{lbl['generated']}: {datetime.now().strftime('%Y-%m-%d %H:%M')}*")
     out.append("")
     if description:
         out.append(description)
@@ -63,7 +123,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     # 2) Function narrative -------------------------------------------
     fn = (report.get("function_narrative") or "").strip()
     if fn:
-        out.append("## 一、生物学功能与疾病机制")
+        out.append(lbl["sec_function"])
         out.append("")
         out.append(fn)
         out.append("")
@@ -71,9 +131,9 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     # 3) Disease associations -----------------------------------------
     diseases = report.get("disease_associations") or []
     if diseases:
-        out.append("## 二、疾病关联")
+        out.append(lbl["sec_disease"])
         out.append("")
-        out.append("| 疾病 | 来源 | 关联评分 | 链接 |")
+        out.append(lbl["disease_col"])
         out.append("|---|---|---:|---|")
         for _d in diseases:
             d = _as_dict(_d)
@@ -82,16 +142,16 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
             score = d.get("score")
             score_s = f"{float(score):.3f}" if isinstance(score, (int, float)) else "—"
             url = d.get("url") or ""
-            link = f"[查看]({url})" if url else "—"
+            link = f"[{lbl['disease_link']}]({url})" if url else "—"
             out.append(f"| {dname} | {src} | {score_s} | {link} |")
         out.append("")
 
     # 4) Pathways ------------------------------------------------------
     pathways = report.get("pathways") or []
     if pathways:
-        out.append("## 三、信号通路")
+        out.append(lbl["sec_pathway"])
         out.append("")
-        out.append("| 通路名称 | 来源 | 外部 ID | 关键互作 |")
+        out.append(lbl["pathway_col"])
         out.append("|---|---|---|---|")
         for _p in pathways:
             p = _as_dict(_p)
@@ -111,13 +171,13 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     pep = report.get("peptide_drugs") or []
     ab = report.get("antibody_drugs") or []
     if sm or pep or ab:
-        out.append("## 四、靶向药物")
+        out.append(lbl["sec_drugs"])
         out.append("")
 
     if sm:
-        out.append("### 4.1 小分子药物")
+        out.append(lbl["sec_drug_sm"])
         out.append("")
-        out.append("| ChEMBL ID | 名称 | 临床阶段 | 活性 (示例) |")
+        out.append(lbl["drug_sm_col"])
         out.append("|---|---|---|---|")
         for _d in sm:
             d = _as_dict(_d)
@@ -155,7 +215,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
                     out.append("")
 
     if pep:
-        out.append("### 4.2 多肽药物")
+        out.append(lbl["sec_drug_pep"])
         out.append("")
         for _d in pep:
             d = _as_dict(_d)
@@ -176,7 +236,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
                 out.append("")
 
     if ab:
-        out.append("### 4.3 抗体药物")
+        out.append(lbl["sec_drug_ab"])
         out.append("")
         for _d in ab:
             d = _as_dict(_d)
@@ -199,7 +259,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     # 6) Protein composition ------------------------------------------
     proteins = report.get("proteins") or []
     if proteins:
-        out.append("## 五、蛋白质结构组成")
+        out.append(lbl["sec_protein"])
         out.append("")
         for _p in proteins:
             p = _as_dict(_p)
@@ -212,18 +272,19 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
             domains = p.get("interpro_domains") or []
             out.append(f"### {pname} (`{acc}`)")
             out.append("")
-            out.append(f"- **基因**: `{pgene}`")
-            out.append(f"- **序列长度**: {length} aa")
+            out.append(f"- **{lbl['protein_gene']}**: `{pgene}`")
+            out.append(f"- **{lbl['protein_length']}**: {length} aa")
             if af:
                 out.append(f"- **AlphaFold**: [{af}](https://alphafold.ebi.ac.uk/entry/{af})")
             if pdbs:
                 pdb_links = ", ".join(
                     f"[{pid}](https://www.rcsb.org/structure/{pid})" for pid in pdbs[:10]
                 )
-                more = f" *(共 {len(pdbs)} 个)*" if len(pdbs) > 10 else ""
-                out.append(f"- **代表 PDB 结构**: {pdb_links}{more}")
+                _more_tpl = lbl["protein_pdb_more"]
+                more = f" *({_more_tpl.format(n=len(pdbs))})*" if len(pdbs) > 10 else ""
+                out.append(f"- **{lbl['protein_pdb']}**: {pdb_links}{more}")
             if domains:
-                out.append("- **InterPro 结构域**:")
+                out.append(f"- **{lbl['protein_domains']}**:")
                 for _dom in domains:
                     dom = _as_dict(_dom)
                     did = dom.get("interpro_id") or "—"
@@ -234,7 +295,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
             seq = p.get("sequence")
             if seq:
                 out.append("")
-                out.append("**氨基酸序列**:")
+                out.append(f"**{lbl['protein_seq']}**:")
                 out.append("")
                 out.append("```fasta")
                 out.append(f">{acc}|{pgene}")
@@ -247,7 +308,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     # 7) Literature ---------------------------------------------------
     papers = report.get("papers") or []
     if papers:
-        out.append("## 六、关键文献")
+        out.append(lbl["sec_literature"])
         out.append("")
         for i, _p in enumerate(papers, 1):
             p = _as_dict(_p)
@@ -277,7 +338,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
     # 8) Notes / gaps -------------------------------------------------
     gaps = report.get("data_source_gaps") or []
     if gaps:
-        out.append("## 七、数据源缺口")
+        out.append(lbl["sec_gaps"])
         out.append("")
         for _g in gaps:
             g = _as_dict(_g)
@@ -288,7 +349,7 @@ def render_target_report_md(report: dict[str, Any], target_query: str) -> str:
 
     notes = report.get("notes") or []
     if notes:
-        out.append("## 八、流水线备注")
+        out.append(lbl["sec_notes"])
         out.append("")
         for n in notes:
             out.append(f"- {n}")

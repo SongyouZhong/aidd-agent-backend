@@ -84,7 +84,7 @@ def _build_summary(target_query: str, report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _run_pipeline(target_query: str) -> dict[str, Any]:
+async def _run_pipeline(target_query: str, language: str = "English") -> dict[str, Any]:
     """Drive the sub-graph, forwarding node events through progress_callback."""
     # Lazy import avoids a circular import: target_discovery_graph imports
     # default_registry from app.tools which would re-enter this module.
@@ -98,6 +98,7 @@ async def _run_pipeline(target_query: str) -> dict[str, Any]:
 
     initial = {
         "target_query": target_query,
+        "language": language,
         "messages": [],
         "sub_results": {},
         "notes": [],
@@ -133,6 +134,7 @@ async def _run_discovery_background(
     session_id: str,
     user_id: str,
     project_id: str | None,
+    language: str = "English",
 ) -> None:
     """Background coroutine: runs the full pipeline and finalises the task.
 
@@ -156,7 +158,7 @@ async def _run_discovery_background(
     try:
         try:
             report = await asyncio.wait_for(
-                _run_pipeline(target_query),
+                _run_pipeline(target_query, language=language),
                 timeout=DEEP_RESEARCH_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
@@ -182,6 +184,7 @@ async def _run_discovery_background(
                 project_id=project_id,
                 target_query=target_query,
                 report=report,
+                language=language,
             )
         except Exception as exc:
             logger.exception("Failed to persist target report for task %s", task_id)
@@ -273,6 +276,7 @@ async def run_target_discovery(target_query: str) -> str:
             session_id=ctx.session_id,
             user_id=ctx.user_id,
             project_id=ctx.project_id,
+            language=ctx.language,
         ),
         task_id=task_id,
     )
