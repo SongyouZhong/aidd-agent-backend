@@ -49,6 +49,7 @@ from app.services.chat_context import (
 from app.services import task_registry
 from app.storage.manager import append_message, load_messages
 from app.storage.s3 import s3_storage, trace_key
+from app.storage.redis_client import get_redis
 from app.tools import default_registry, tool_search
 
 logger = logging.getLogger(__name__)
@@ -110,13 +111,13 @@ async def stream_chat(
 
     # ----- 2. Save user message -----
     user_msg_id = str(uuid.uuid4())
-    await append_message(session_id, {
+    user_msg_doc = {
         "id": user_msg_id,
         "role": "user",
         "content": user_content,
         "ts": _now_iso(),
         "file_ids": file_ids or [],
-    })
+    }
 
     # ----- 3. Build provider & context -----
     provider = get_default_provider()
@@ -138,6 +139,10 @@ async def stream_chat(
 
     full_text = ""
     total_rounds = 0
+    is_completed = False
+
+    redis = await get_redis()
+    abort_key = f"session:abort:{session_id}"
 
     try:
         yield _sse({"event": "message_start", "data": {"message_id": assistant_msg_id}})
@@ -189,9 +194,15 @@ async def stream_chat(
             round_thinking = ""
             tool_calls: list[StreamChunk] = []
             round_start = time.monotonic()
+            chunk_count = 0
 
             try:
                 async for chunk in provider.stream(llm_messages, tools=tools_for_llm):
+                    chunk_count += 1
+                    if chunk_count % 20 == 0:
+                        if await redis.get(abort_key):
+                            raise asyncio.CancelledError("Explicitly aborted by user.")
+
                     if chunk.type == "thinking":
                         round_thinking += chunk.content
                         yield _sse({"event": "thinking_delta", "data": {"delta": chunk.content}})
@@ -378,6 +389,7 @@ async def stream_chat(
             },
         })
         yield "data: [DONE]\n\n"
+        is_completed = True
     finally:
         # Phase 0: protect persistence from client disconnection.
         # asyncio.shield keeps _finalize running even if this generator
@@ -385,8 +397,8 @@ async def stream_chat(
         try:
             await asyncio.shield(
                 _finalize(
-                    session_id, assistant_msg_id, full_text,
-                    produced_file_ids, trace_steps,
+                    session_id, user_msg_doc, assistant_msg_id, full_text,
+                    produced_file_ids, trace_steps, is_completed
                 )
             )
         except asyncio.CancelledError:
@@ -588,17 +600,25 @@ async def _generate_session_title(
 
 async def _finalize(
     session_id: str,
+    user_msg_doc: dict[str, Any],
     assistant_msg_id: str,
     full_text: str,
     produced_file_ids: list[str],
     trace_steps: list[dict[str, Any]],
+    is_completed: bool,
 ) -> None:
-    """Persist the assistant message and trace to storage.
+    """Persist the user message, assistant message and trace to storage.
 
     Called inside ``asyncio.shield`` from ``stream_chat``'s ``finally``
-    block so it completes even when the SSE stream is cancelled
-    (e.g. client refresh mid-stream).
+    block. Implements atomic commit and context rollback:
+    If is_completed is False (aborted/cancelled stream), memory messages
+    are discarded, successfully reverting context to previous turn.
     """
+    if not is_completed:
+        # Context Rollback: do not save the user message or partial assistant reply
+        return
+
+    await append_message(session_id, user_msg_doc)
     await append_message(session_id, {
         "id": assistant_msg_id,
         "role": "assistant",
